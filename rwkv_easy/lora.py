@@ -121,7 +121,19 @@ class InjectionReport:
     total_parameters: int
 
 
-def _matches(name: str, suffixes: list[str], regex: re.Pattern[str] | None) -> bool:
+_BLOCK_RE = re.compile(r"^blocks\.(\d+)\.")
+
+
+def _matches(
+    name: str,
+    suffixes: list[str],
+    regex: re.Pattern[str] | None,
+    target_layers: set[int] | None = None,
+) -> bool:
+    if target_layers is not None:
+        match = _BLOCK_RE.match(name)
+        if match is None or int(match.group(1)) not in target_layers:
+            return False
     if any(name.endswith(suffix) for suffix in suffixes):
         return True
     return bool(regex and regex.search(name))
@@ -142,26 +154,41 @@ def inject_lora(
     alpha: int = 32,
     dropout: float = 0.0,
     target_regex: str | None = None,
+    target_layers: list[int] | None = None,
     log: Any = None,
 ) -> InjectionReport:
-    """按模块名后缀注入 LoRA，返回注入报告。"""
+    """按模块名后缀注入 LoRA，返回注入报告。
+
+    ``target_layers`` 为 ``None`` 时作用于所有 block；给出列表时只注入这些
+    block（``blocks.<i>.``）里的匹配模块。
+    """
     if rank <= 0:
         raise ValueError("LoRA rank 必须 > 0")
     if alpha <= 0:
         raise ValueError("LoRA alpha 必须 > 0")
     regex = re.compile(target_regex) if target_regex else None
+    layers = None
+    if target_layers is not None:
+        layers = set()
+        for value in target_layers:
+            if not isinstance(value, int) or value < 0:
+                raise ValueError(f"target_layers 只能是非负整数，收到 {value!r}")
+            layers.add(value)
+        if not layers:
+            raise ValueError("target_layers 不能是空列表；想训练所有层请设成 null")
 
     candidates: list[str] = []
     for name, module in model.named_modules():
         if not isinstance(module, nn.Linear):
             continue
-        if _matches(name, target_modules, regex):
+        if _matches(name, target_modules, regex, layers):
             candidates.append(name)
 
     if not candidates:
         raise ValueError(
             "没有匹配到任何 nn.Linear，LoRA 无法注入。\n"
-            f"target_modules={target_modules}, target_regex={target_regex!r}\n"
+            f"target_modules={target_modules}, target_regex={target_regex!r}, "
+            f"target_layers={target_layers!r}\n"
             "模型里可用的 Linear："
             + ", ".join(
                 name for name, module in model.named_modules() if isinstance(module, nn.Linear)

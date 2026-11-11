@@ -106,6 +106,15 @@ def test_inject_lora_freezes_base(model):
     assert report.trainable_parameters < report.total_parameters
 
 
+def test_inject_lora_target_layers():
+    cfg = RWKV7Config(vocab_size=32, n_layer=4, n_embd=16, head_size=8)
+    model = RWKV7(cfg, NativeBackend(chunk=8), decay_mode="clampw")
+    report = inject_lora(model, ["att.key"], rank=4, alpha=8, target_layers=[0, 2])
+    assert len(report.targets) == 2
+    names = [n for n, m in model.named_modules() if isinstance(m, LoRALinear)]
+    assert names == ["blocks.0.att.key", "blocks.2.att.key"]
+
+
 def test_lora_zero_init_is_identity(model):
     inject_lora(model, ["att.key"], rank=4, alpha=8)
     model.eval()

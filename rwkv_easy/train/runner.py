@@ -167,6 +167,7 @@ def run_training(
                 alpha=int(cfg.lora.alpha),
                 dropout=float(cfg.lora.dropout),
                 target_regex=cfg.lora.target_regex,
+                target_layers=cfg.lora.target_layers,
                 log=log if dist.is_main else None,
             )
         elif cfg.train.method == "state":

@@ -143,6 +143,8 @@ class LoRAConfig:
     )
     # 可选：额外用正则匹配（与 target_modules 取并集）。
     target_regex: str | None = None
+    # 可选：只注入这些 block 下标（0-based）；None = 所有层。
+    target_layers: list[int] | None = None
 
 
 @dataclass
@@ -376,6 +378,15 @@ class Config:
                 errors.append("lora.dropout 必须在 [0, 1) 内")
             if not self.lora.target_modules and not self.lora.target_regex:
                 errors.append("lora.target_modules 与 lora.target_regex 不能同时为空")
+            if self.lora.target_layers is not None:
+                if not isinstance(self.lora.target_layers, list) or not self.lora.target_layers:
+                    errors.append("lora.target_layers 必须是非空列表或 null")
+                else:
+                    for value in self.lora.target_layers:
+                        if not isinstance(value, int) or value < 0:
+                            errors.append(
+                                f"lora.target_layers 只能包含非负整数，收到 {value!r}"
+                            )
 
         # -- data -------------------------------------------------------
         if not self.data.path:
@@ -682,6 +693,7 @@ def template_config(
             "    - att.output",
             "    - ffn.key",
             "    - ffn.value",
+            "  target_layers: null                # null = 所有 block；或 [0,1,2]",
             "",
         ]
     else:
