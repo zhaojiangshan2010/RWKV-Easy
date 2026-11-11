@@ -115,8 +115,10 @@ class TrainConfig:
     merge_at_end: bool = True
     # 训练后做一次验证集评估（data.val_ratio > 0 时有效）。
     val_every_steps: int = 0
-    # torch.compile（实验性；Windows 上首次编译较慢）。
+    # torch.compile（编译训练前向；首次启动慢）。
     compile: bool = False
+    # default | reduce-overhead | max-autotune
+    compile_mode: str = "default"
     # auto | cpu | cuda | cuda:0 ...
     device: str = "auto"
 
@@ -351,6 +353,11 @@ class Config:
         if self.train.lr_schedule not in ("cosine", "linear", "constant"):
             errors.append(
                 f"train.lr_schedule 只能是 cosine/linear/constant，收到 {self.train.lr_schedule!r}"
+            )
+        if self.train.compile_mode not in ("default", "reduce-overhead", "max-autotune"):
+            errors.append(
+                "train.compile_mode 只能是 default/reduce-overhead/max-autotune，"
+                f"收到 {self.train.compile_mode!r}"
             )
         try:
             normalize_precision(self.train.precision)

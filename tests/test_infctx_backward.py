@@ -55,6 +55,8 @@ def _build(method: str, grad_checkpoint: bool):
     trainer = Trainer.__new__(Trainer)
     trainer.cfg = cfg
     trainer.model = model
+    trainer._forward_hidden = model.forward_hidden
+    trainer._forward_chunk_hidden = model.forward_chunk_hidden
     trainer.backend = _Backend()
     trainer.grad_accum = 1
     trainer.device = torch.device("cpu")
