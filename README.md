@@ -4,10 +4,24 @@
 并且两者都能与 RWKV 的 **infinite context（infctx）** 组合。
 
 - 数据：**ShareGPT** 格式（同时兼容 OpenAI messages / 纯文本）
+- loss：**completion-only**，prompt 只作上下文，只有 assistant 回复参与训练
 - 精度：**FP32 / FP16 / BF16 / BF16-full**
 - 多卡：**DeepSpeed 可选**，不装也能用 PyTorch DDP
 - 平台：CUDA 优先；纯 PyTorch 算子同时支持 **CPU / ROCm / MPS**
 - 面向新手：一条命令安装、一条命令训练、出错信息讲人话
+
+## 项目状态
+
+| 范围 | 状态 |
+|---|---|
+| 数学正确性（WKV 前向/梯度、infctx 等价性、LoRA 合并） | ✅ CPU 上与 float64 参考对照，误差 < 1e-5 |
+| 数据管线（ShareGPT、completion-only mask、packed/sample） | ✅ 96 个测试覆盖 |
+| 端到端（训练、断点、合并、重载、bf16、2 进程 DDP） | ✅ CPU 上验证通过 |
+| 真实 RWKV-7 权重 | ✅ `rwkv7-g1d-0.1b` 已在 CPU 验收：decay=clampw，NLL 2.54，续写连贯 |
+| CUDA 性能/显存、fp16、DeepSpeed、fla/Triton | ⏳ 需要 NVIDIA GPU 验证 |
+
+本机（Windows + CPU）已验证的内容与复现命令见
+[`docs/CPU_VERIFICATION.md`](docs/CPU_VERIFICATION.md)。
 
 ---
 
@@ -15,6 +29,8 @@
 
 - [为什么需要它](#为什么需要它)
 - [5 分钟上手](#5-分钟上手)
+- [本机 CPU 验证](#本机-cpu-验证不需要-gpu)
+- [拿到模型后的验收](#拿到模型后的验收)
 - [四种训练组合](#四种训练组合)
 - [命令行速查](#命令行速查)
 - [数据集格式](#数据集格式)
@@ -99,6 +115,8 @@ mkdir -p models data
 ```
 
 RWKV-7 权重可以从 HuggingFace 上的 RWKV 官方仓库获取（例如 `RWKV/rwkv7-...`）。
+`models/` 已被 `.gitignore` 忽略，不用担心把大文件提交进仓库；不确定该下哪个
+文件、或者下载后想先确认格式，见 [`docs/MODEL_CHECK.md`](docs/MODEL_CHECK.md)。
 本项目读取的是**官方 state_dict 格式**的 `.pth`，维度会自动从权重推断。
 
 数据格式见 [数据集格式](#数据集格式)。想先试试？项目自带一份
@@ -174,6 +192,98 @@ python -m rwkv_easy generate -m runs/xxx/merged.pth -p "你好，请介绍一下
 python -m rwkv_easy train -c configs/my-lora-run.yaml --resume runs/xxx
 ```
 
+### 8. 训练时内部发生了什么
+
+```
+读 YAML → 校验 → 建 run 目录
+  → 读 ShareGPT、分词、构造 completion-only mask、缓存
+  → 加载 RWKV-7（meta 设备 + mmap + assign，按精度定型）
+  → decay 自动校准（三种公式各算一次 loss，选最低）
+  → 注入 LoRA 或 time_state（冻结基座）
+  → 循环：前向（infctx 则分块传状态）→ CE + L2Wrap → 反传 → 裁剪 → step
+  → 定期保存 adapter + 优化器；结束导出 merged.pth
+```
+
+启动日志里的每一行都能对应上面的步骤；出问题时先看最后一条成功的日志。
+
+---
+
+## 本机 CPU 验证（不需要 GPU）
+
+WKV 算子是纯 PyTorch 写的，所以整条链路都能在 CPU 上验证。三条命令：
+
+```bash
+python -m pytest tests -q                      # 96 个测试，约 3-6 分钟
+python -m rwkv_easy selftest --full            # lora/state × infctx on/off × fp32/bf16
+python -m rwkv_easy train -c configs/debug_cpu.yaml   # 随机小模型，20 步
+```
+
+`debug_cpu.yaml` 不需要任何权重，会随机初始化一个 2 层小模型并跑通
+「训练 → 保存 → 合并 → 重载」。预期输出：
+
+```
+[step 20/20 100.0%] loss 11.1975 (ema 11.2595) ...
+已保存：adapter-step0000020.pth
+完整权重：runs\debug-cpu-lora-infctx-...\merged.pth
+```
+
+CPU 能验证：WKV 数学（与 float64 逐 token 参考对照）、completion-only mask、
+infctx 状态传递、LoRA 合并、State 梯度、bf16/bf16-full、断点续训、2 进程 DDP。
+CPU 不能验证：CUDA 性能/显存、fp16、DeepSpeed、fla/Triton、NCCL、7B 级训练速度。
+
+完整矩阵、每项判据与实测数字见
+[`docs/CPU_VERIFICATION.md`](docs/CPU_VERIFICATION.md)。
+
+### 10 分钟看到效果：教模型记住自己的名字
+
+`examples/self_identity.json` 里有 58 条短对话，其中 50 条在问「你是什么模型」，
+统一回答「RWKV 0.1B 大模型」。
+
+```bash
+rwkv-easy train -c configs/self_identity_lora.yaml
+rwkv-easy generate -m runs/self-identity-*/merged.pth -p "你是谁？" --template rwkv_world
+```
+
+0.1B 模型在 CPU 上 400 步约 5 分钟：loss 3.75 → 0.087，
+`你是什么模型？`、`你是谁？`、`你是哪个 AI 助理？`、`What model are you?`
+全部回答 `RWKV 0.1B 大模型`（含训练中没见过的问法）。这是**故意过拟合**的演示，
+用来确认「数据 → 训练 → 合并 → 推理」整条链路，不代表真实微调效果。
+
+---
+
+## 拿到模型后的验收
+
+建议在正式训练前花 5 分钟确认「格式对、架构对、decay 对、能出字」：
+
+```bash
+# 1) 一条命令验收：输出现成的结构、decay 三种候选 loss、一段续写
+rwkv-easy check-model -m models/你的模型.pth
+
+# 2) 环境 + WKV 数值自检
+rwkv-easy doctor
+
+# 3) 对话模型再按对话格式测一次
+rwkv-easy generate -m models/你的模型.pth -p "你好" --max-tokens 64 --template rwkv_world
+
+# 4) 20 步 LoRA 冒烟
+rwkv-easy train -c configs/lora_sharegpt.yaml \
+  --set model.path=models/你的模型.pth --set train.max_steps=20
+
+# 5) infctx 冒烟
+rwkv-easy train -c configs/lora_sharegpt_infctx.yaml \
+  --set model.path=models/你的模型.pth --set train.max_steps=20
+```
+
+判断标准：
+
+- `check-model` 会打印 `均匀分布基线` 与 `clampw / softplus / exp` 三个 loss，
+  最低者被选中，且应明显低于基线；
+- 续写应是通顺的文本，而不是乱码/重复；
+- `doctor` 的 WKV 自检误差应 < 1e-4；
+- 20 步训练里 loss 应从前 1–2 步的 `ln(vocab)` 附近开始下降。
+
+完整异常对照表见 [`docs/MODEL_CHECK.md`](docs/MODEL_CHECK.md)。
+
 ---
 
 ## 四种训练组合
@@ -215,6 +325,7 @@ configs/debug_cpu.yaml
 ```bash
 rwkv-easy init          生成配置（交互式向导）
 rwkv-easy inspect-data  检查数据与 loss mask
+rwkv-easy check-model   验收一个 RWKV-7 权重（格式/架构/decay/出字）
 rwkv-easy train         开始 / 继续训练
 rwkv-easy merge         把适配器合并成完整模型
 rwkv-easy generate      小规模生成（诊断）
@@ -297,8 +408,31 @@ Assistant: ...
 每轮之间空一行；`append_eos: end` 会在对话末尾追加 EOT（词表里的 `\x00`）。
 也内置了 `chatml` 模板，或用 `data.system_prefix` 等字段自定义。
 
-**重要**：只有 assistant 的回复（以及它后面的分隔符 / EOT）参与 loss，
-System 和 User 只是上下文。
+### completion-only loss
+
+默认且唯一的行为：**只有 assistant 的回复参与 loss**，System / User / 工具返回
+都只作为上下文。`Assistant: ` 前缀本身不计 loss，回复正文、它后面的分隔符、
+以及可选的 EOT 计 loss；回复的第一个 token 由 prompt 最后一个 token 预测，
+所以也会被监督。
+
+```yaml
+data:
+  train_on: assistant      # 所有 assistant 轮次（默认）
+  # train_on: last_assistant   # 只训练最后一条回复
+  append_eos: end          # never / end / each_assistant
+```
+
+用 `rwkv-easy inspect-data` 可以直接看到哪些 token 参与 loss（`【】`）：
+
+```
+User: 请只回答一个词
+
+Assistant: 【苹果】【
+
+】
+```
+
+目前没有“连 prompt 一起训练”的开关（纯文本数据除外，`format: text` 时整段参与）。
 
 更多细节见 [`docs/DATASET.md`](docs/DATASET.md)。
 
@@ -314,6 +448,18 @@ System 和 User 只是上下文。
 | 1.5B | LoRA | ~14 GB | ~16 GB |
 | 3B | LoRA | ~22 GB | ~24 GB |
 | 7B | LoRA | 需要 24GB+ 或 ZeRO-2/3 | 建议 `bf16-full` + `chunk_ctx 512` |
+
+### 实测速度（CPU，仅供参考）
+
+| 场景 | 配置 | 速度 |
+|---|---|---|
+| 0.1B `check-model` | fp32，3×256 token 校准 + 24 token 生成 | 14 秒 |
+| 0.1B LoRA | ctx 64，bsz 1，r=16，fp32 | ≈70 tok/s |
+| 0.1B LoRA + infctx | ctx 128 / chunk 64，fp32 | ≈62 tok/s |
+| 0.1B 自我认知过拟合 | sample，ctx 64，400 步 | 约 4.5 分钟 |
+| GPU | — | 待 GPU 机器验证后补充 |
+
+CPU 上一定要用 `precision: fp32`：bf16 参数的反向传播会慢约 75 倍。
 
 显存不够时，按顺序尝试：
 
@@ -334,6 +480,11 @@ System 和 User 只是上下文。
 - 先跑 `inspect-data`，确认 `【】` 只包住 assistant 回复；
 - 学习率太大或太小：LoRA 从 1e-4 试起，State 从 5e-3 试起；
 - 检查 `model.decay`：默认 `auto` 会在启动时打印选中的公式和三个候选的 loss。
+
+**Q：过拟合后对所有问题都回答同一句？**
+多半是推理 prompt 的 token 边界与训练不一致（最常见是 `"Assistant: "` 的尾空格）。
+`rwkv-easy generate` 已经用 `ChatTemplate.generation_prompt()` 处理；自己写推理
+代码时请调用同一个方法，并保持模板与训练时一致。
 
 **Q：能不能不装 DeepSpeed？**
 可以。单卡完全不需要；多卡用 DDP（`dist.mode: ddp` 或 `auto`）。
@@ -368,10 +519,13 @@ RWKV-EASY/
 │   ├── data/               # 分词器 / ShareGPT / 数据集
 │   ├── train/              # 训练循环 / DDP / DeepSpeed / 保存
 │   └── assets/             # 内置词表、校准文本、示例数据
-├── configs/                # 配置模板
+├── configs/                # 配置模板（含自我认知过拟合 demo）
 ├── docs/                   # 详细文档
 ├── tests/                  # 纯 CPU 测试（含 2 进程 DDP）
-└── examples/               # 示例数据
+├── examples/               # 示例数据（ShareGPT、自我认知实验数据）
+├── CHANGELOG.md
+├── install.sh / .bat / .ps1
+└── train.sh / .bat
 ```
 
 ---
@@ -380,9 +534,12 @@ RWKV-EASY/
 
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)：数据流、WKV 数学、infctx 与状态传递
 - [`docs/CONFIG.md`](docs/CONFIG.md)：每一个配置项的含义
-- [`docs/DATASET.md`](docs/DATASET.md)：ShareGPT、模板、mask、packed vs sample
+- [`docs/DATASET.md`](docs/DATASET.md)：ShareGPT、模板、completion-only mask、packed vs sample
+- [`docs/CPU_VERIFICATION.md`](docs/CPU_VERIFICATION.md)：CPU 能验证什么、怎么复现、实测数字
+- [`docs/MODEL_CHECK.md`](docs/MODEL_CHECK.md)：新权重 5 分钟验收清单与异常对照
 - [`docs/EXTENDING.md`](docs/EXTENDING.md)：接入自定义 WKV 内核（CUDA/Triton/ROCm）、新模型版本、新数据格式
 - [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md)：报错对照表
+- [`CHANGELOG.md`](CHANGELOG.md)：版本与本次验证/修复记录
 
 ---
 

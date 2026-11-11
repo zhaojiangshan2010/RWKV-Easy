@@ -171,3 +171,19 @@ def test_val_split(tmp_path, tiny_checkpoint, tiny_sharegpt):
     built = build_datasets(cfg)
     assert built.val is not None
     assert built.stats.val_documents > 0
+
+
+@pytest.mark.parametrize("template_name", ["rwkv_world", "chatml"])
+def test_generation_prompt_is_token_prefix_of_training_text(
+    tokenizer, template_name
+):
+    """生成 prompt 的分词结果必须是训练文本的前缀，否则上下文与训练不一致。"""
+    tpl = build_template(template_name)
+    user_text = "你是什么模型？"
+    training_text = (
+        f"{tpl.user_prefix}{user_text}{tpl.turn_separator}"
+        f"{tpl.assistant_prefix}RWKV 0.1B 大模型"
+    )
+    prompt_ids = tokenizer.encode(tpl.generation_prompt(user_text))
+    train_ids = tokenizer.encode(training_text)
+    assert train_ids[: len(prompt_ids)] == prompt_ids

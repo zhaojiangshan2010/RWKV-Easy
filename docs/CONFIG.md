@@ -162,7 +162,7 @@ target_modules: [att.receptance, att.key, att.value, att.output]
 | `user_prefix` | str \| null | `null` | 覆盖模板的 User 前缀 |
 | `assistant_prefix` | str \| null | `null` | 覆盖模板的 Assistant 前缀 |
 | `turn_separator` | str \| null | `null` | 覆盖每轮之间的分隔符 |
-| `train_on` | str | `assistant` | `assistant`（所有回复）或 `last_assistant`（只训练最后一条） |
+| `train_on` | str | `assistant` | completion-only loss：`assistant`（所有回复）或 `last_assistant`（只训练最后一条）；prompt 永远不计 loss |
 | `append_eos` | str | `end` | `never` / `end` / `each_assistant` |
 | `eos_token_id` | int \| null | `null` | 留空自动使用词表里的 `\x00`（通常是 1） |
 | `truncation` | str | `head` | sample 模式下超长样本的截断方式：`head` / `tail` / `random` |

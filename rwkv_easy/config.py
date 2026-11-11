@@ -648,7 +648,7 @@ def template_config(
         "  lr: 1.0e-4",
         "  lr_schedule: cosine",
         "  warmup_steps: 20",
-        "  precision: bf16                    # fp32 / fp16 / bf16 / bf16-full",
+        "  precision: bf16                    # fp32 / fp16 / bf16 / bf16-full（CPU 上必须 fp32）",
         "  grad_checkpoint: true              # 显存不够就保持 true",
         "  merge_at_end: true                 # 训练完自动导出完整权重",
         "",

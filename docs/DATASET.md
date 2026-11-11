@@ -64,6 +64,13 @@ data:
 > 前缀是**上下文**，不参与 loss；只有 assistant 回复的正文、它后面的分隔符
 > 以及可选的 EOT 参与 loss。
 
+> **推理时的边界**：训练文本是 `assistant_prefix + content`，分词器会把
+> `"Assistant: "` 末尾的空格贪心并入回答的第一个 token（例如 `" RW"`）。
+> 因此生成时 prompt 必须以 `Assistant:`（不带尾空格）结尾，否则上下文与训练
+> 不一致，过拟合模型会直接跑偏。`ChatTemplate.generation_prompt(text)` 已经
+> 处理了这一点，`rwkv-easy generate` 也用的是它；自己写推理代码时请调用同一
+> 个方法。
+
 ## loss mask 是怎么算的
 
 1. 按模板把对话渲染成若干「文本片段」，每段带 `trainable` 标记；
@@ -74,6 +81,26 @@ data:
 
 第 4 步用「重叠」而不是「完全包含」，是为了保证 "Assistant: " 和回复正文
 被合并成一个 token 时，回复的第一个 token 不会漏掉。
+
+这就是标准的 **completion-only loss**：
+
+- prompt / system / 工具返回只作为上下文，不产生任何 loss；
+- `labels[t]` 由「下一个 token 是否可训练」决定，所以回复的第一个 token 由
+  prompt 的最后一个 token 预测，同样被监督；
+- loss 分母只统计有效 token（`ignore_index=-100`），不会被 prompt 稀释。
+
+相关配置：
+
+| 配置 | 效果 |
+|---|---|
+| `train_on: assistant`（默认） | 所有 assistant 轮次都计 loss |
+| `train_on: last_assistant` | 只训练最后一条回复，之前的回复降级为上下文 |
+| `append_eos: end`（默认） | 对话末尾的 EOT 计 loss，模型学会停止 |
+| `append_eos: each_assistant` | 每轮回复后都训练一个 EOT |
+| `append_eos: never` | 不训练 EOT |
+
+目前没有「把 prompt 也计入 loss」的开关；纯文本数据（`format: text`）是唯一的
+例外，它的整段内容都会参与训练。
 
 ### 用 `inspect-data` 肉眼检查
 

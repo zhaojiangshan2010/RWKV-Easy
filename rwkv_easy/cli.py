@@ -45,6 +45,7 @@ def build_parser() -> argparse.ArgumentParser:
   rwkv-easy init --model models/rwkv7.pth --data data/sharegpt.json
   rwkv-easy train -c configs/my_lora.yaml
   rwkv-easy merge --base models/rwkv7.pth --adapter runs/xxx/adapter-step0000100.pth --out merged.pth
+  rwkv-easy check-model -m models/rwkv7.pth
   rwkv-easy doctor
 """,
     )
@@ -112,6 +113,21 @@ def build_parser() -> argparse.ArgumentParser:
     gen.add_argument("--sample", action="store_true", help="采样（默认贪心）")
     gen.add_argument("--decay", default="auto", choices=["auto", "clampw", "softplus", "exp"])
     gen.add_argument("--template", default="rwkv_world", choices=["rwkv_world", "chatml", "none"])
+    gen.add_argument(
+        "--dtype",
+        default="auto",
+        choices=["auto", "fp32", "bf16"],
+        help="auto = CPU 用 fp32（快很多）、GPU 保持权重 dtype",
+    )
+
+    # -- check-model ----------------------------------------------------
+    check = sub.add_parser("check-model", help="一条命令验收 RWKV-7 权重（格式/架构/decay/出字）")
+    check.add_argument("-m", "--model", required=True, help="RWKV-7 权重（.pth / .safetensors）")
+    check.add_argument("--max-tokens", type=int, default=32)
+    check.add_argument("--dtype", default="fp32", choices=["fp32", "bf16", "fp16"])
+    check.add_argument("--device", default="auto", help="auto / cpu / cuda")
+    check.add_argument("--backend", default="native", choices=["native", "reference"])
+    check.add_argument("--sample", action="store_true", help="采样（默认贪心）")
 
     return parser
 
@@ -136,6 +152,7 @@ def main(argv: list[str] | None = None) -> int:
         "selftest": cmd_selftest,
         "inspect-data": cmd_inspect_data,
         "generate": cmd_generate,
+        "check-model": cmd_check_model,
     }
     try:
         return int(commands[args.command](args) or 0)
@@ -661,6 +678,43 @@ def cmd_inspect_data(args: argparse.Namespace) -> int:
 # --------------------------------------------------------------------------- #
 
 
+def _generate_text(
+    model,
+    tokenizer,
+    prompt: str,
+    device,
+    *,
+    max_tokens: int,
+    sample: bool = False,
+    temperature: float = 0.8,
+    top_p: float = 0.9,
+) -> str:
+    """贪心 / 采样生成（诊断用）。prompt 已经由调用方套好模板。"""
+    input_ids = torch.tensor([tokenizer.encode(prompt)], device=device)
+    generated: list[int] = []
+    with torch.no_grad():
+        logits, state = model(input_ids, need_state=True)
+        for _ in range(max_tokens):
+            last = logits[:, -1, :].float()
+            if sample:
+                probs = torch.softmax(last / max(1e-5, temperature), dim=-1)
+                sorted_probs, sorted_idx = probs.sort(dim=-1, descending=True)
+                cumulative = sorted_probs.cumsum(dim=-1)
+                cutoff = cumulative - sorted_probs > top_p
+                sorted_probs[cutoff] = 0.0
+                sorted_probs = sorted_probs / sorted_probs.sum(dim=-1, keepdim=True)
+                choice = torch.multinomial(sorted_probs, 1)
+                next_id = int(sorted_idx.gather(-1, choice).item())
+            else:
+                next_id = int(last.argmax(dim=-1).item())
+            generated.append(next_id)
+            if next_id == tokenizer.eot_id:
+                break
+            step_ids = torch.tensor([[next_id]], device=device)
+            logits, state = model(step_ids, state=state, need_state=True)
+    return tokenizer.decode(generated)
+
+
 def cmd_generate(args: argparse.Namespace) -> int:
     from .data.template import build_template
     from .data.tokenizer import get_tokenizer
@@ -670,8 +724,18 @@ def cmd_generate(args: argparse.Namespace) -> int:
 
     device = resolve_device("auto")
     tokenizer = get_tokenizer()
+    # CPU 上 bf16 的前向/反传都远慢于 fp32，所以 auto 在 CPU 上强制 fp32。
+    if args.dtype == "fp32":
+        load_dtype: torch.dtype | None = torch.float32
+    elif args.dtype == "bf16":
+        load_dtype = torch.bfloat16
+    else:
+        load_dtype = torch.float32 if device.type == "cpu" else None
     model, model_cfg, signature = load_model_from_checkpoint(
-        args.model, backend="native", decay="clampw" if args.decay == "auto" else args.decay
+        args.model,
+        backend="native",
+        decay="clampw" if args.decay == "auto" else args.decay,
+        dtype=load_dtype,
     )
     model.to(device)
     model.eval()
@@ -683,32 +747,119 @@ def cmd_generate(args: argparse.Namespace) -> int:
     prompt = args.prompt
     if args.template != "none":
         template = build_template(args.template)
-        prompt = f"{template.user_prefix}{prompt}{template.turn_separator}{template.assistant_prefix}"
+        prompt = template.generation_prompt(args.prompt)
 
-    input_ids = torch.tensor([tokenizer.encode(prompt)], device=device)
-    with torch.no_grad():
-        logits, state = model(input_ids, need_state=True)
-        generated: list[int] = []
-        for _ in range(args.max_tokens):
-            last = logits[:, -1, :].float()
-            if args.sample:
-                probs = torch.softmax(last / max(1e-5, args.temperature), dim=-1)
-                sorted_probs, sorted_idx = probs.sort(dim=-1, descending=True)
-                cumulative = sorted_probs.cumsum(dim=-1)
-                mask = cumulative - sorted_probs > args.top_p
-                sorted_probs[mask] = 0.0
-                sorted_probs = sorted_probs / sorted_probs.sum(dim=-1, keepdim=True)
-                choice = torch.multinomial(sorted_probs, 1)
-                next_id = int(sorted_idx.gather(-1, choice).item())
-            else:
-                next_id = int(last.argmax(dim=-1).item())
-            generated.append(next_id)
-            if next_id == tokenizer.eot_id:
-                break
-            step_ids = torch.tensor([[next_id]], device=device)
-            logits, state = model(step_ids, state=state, need_state=True)
+    completion = _generate_text(
+        model,
+        tokenizer,
+        prompt,
+        device,
+        max_tokens=args.max_tokens,
+        sample=args.sample,
+        temperature=args.temperature,
+        top_p=args.top_p,
+    )
+    print("-" * 62)
+    print(prompt + completion)
+    print("-" * 62)
+    return 0
 
+
+# --------------------------------------------------------------------------- #
+# check-model
+# --------------------------------------------------------------------------- #
+
+
+def cmd_check_model(args: argparse.Namespace) -> int:
+    """一条命令完成新权重验收：格式 → 架构 → decay → 出字。"""
+    import math
+
+    from .data.tokenizer import get_tokenizer
+    from .models.checkpoint import infer_config, load_model_from_checkpoint, read_checkpoint
+    from .models.decay import calibrate_decay
+    from .runtime import resolve_device
+
+    path = Path(args.model)
+    if not path.exists():
+        raise FileNotFoundError(f"模型文件不存在：{path}")
+
+    print("=" * 62)
+    print("RWKV-EASY 模型验收")
+    print("=" * 62)
+    print(f"文件    : {path}（{human_size(path.stat().st_size)}）")
+
+    # ---- 1. 格式 ----
+    state = read_checkpoint(path)
+    cfg = infer_config(state)
+    print(f"张量数  : {len(state)}")
+    print(
+        f"结构    : {cfg.n_layer} 层 / {cfg.n_embd} 维 / {cfg.n_head} 头 / "
+        f"head_size={cfg.head_size} / vocab={cfg.vocab_size}"
+    )
+    print(f"emb     : {tuple(state['emb.weight'].shape)}   head: {tuple(state['head.weight'].shape)}")
+    if "blocks.0.att.r_k" in state:
+        print(f"r_k     : {tuple(state['blocks.0.att.r_k'].shape)}")
+
+    tokenizer = get_tokenizer()
+    if cfg.vocab_size < tokenizer.vocab_size:
+        print(
+            f"提醒    : 模型 vocab={cfg.vocab_size} 小于词表的 {tokenizer.vocab_size}，"
+            "超出范围的 token 会越界；请确认词表匹配。"
+        )
+
+    # ---- 2. 加载 ----
+    dtype = {"fp32": torch.float32, "bf16": torch.bfloat16, "fp16": torch.float16}[args.dtype]
+    device = resolve_device(args.device)
+    model, model_cfg, signature = load_model_from_checkpoint(
+        path, backend=args.backend, decay="clampw", dtype=dtype
+    )
+    model.to(device)
+    model.eval()
+    print(f"参数    : {model.num_parameters() / 1e6:.2f}M（{args.dtype}，{device}）")
+
+    # ---- 3. decay 校准 ----
+    calibration = calibrate_decay(
+        model, tokenizer, device, cache_key=signature, cache_dir=None, log=None
+    )
+    baseline = math.log(max(2, cfg.vocab_size))
+    print()
+    print("decay 校准（256 token 的语言建模 loss，越低越匹配）")
+    print(f"  均匀分布基线 : {baseline:.3f}")
+    for mode, score in sorted(calibration.scores.items(), key=lambda item: item[1]):
+        marker = "  <- 选中" if mode == calibration.mode else ""
+        print(f"  {mode:<9}: {score:.4f}{marker}")
+    model.set_decay_mode(calibration.mode)
+
+    if calibration.scores:
+        best = min(calibration.scores.values())
+        spread = max(calibration.scores.values()) - best
+        if best > baseline * 0.9:
+            verdict = "可疑：loss 接近均匀分布，权重可能损坏、未训练好，或不是 x070"
+        elif best > baseline * 0.7:
+            verdict = "偏弱：能加载，但输出质量可能一般（多见于很小的模型或很短的校准文本）"
+        else:
+            verdict = "正常：loss 明显低于均匀分布"
+        print(f"  结论        : {verdict}（候选差距 {spread:.4f}）")
+
+    # ---- 4. 出字 ----
+    prompt = "The quick brown fox"
+    completion = _generate_text(
+        model,
+        tokenizer,
+        prompt,
+        device,
+        max_tokens=args.max_tokens,
+        sample=args.sample,
+        temperature=0.8,
+        top_p=0.9,
+    )
+    print()
+    print(f"续写（贪心，{args.max_tokens} token）")
     print("-" * 62)
-    print(prompt + tokenizer.decode(generated))
+    print(prompt + completion.replace("\x00", "<EOT>"))
     print("-" * 62)
+    print()
+    print("下一步：")
+    print("  rwkv-easy generate -m ... -p '你好' --template rwkv_world   # 对话格式再测一次")
+    print("  rwkv-easy train -c configs/lora_sharegpt.yaml --set model.path=... --set train.max_steps=20")
     return 0

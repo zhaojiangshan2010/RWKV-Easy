@@ -248,6 +248,12 @@ time_state : (H, K, K)      # K = head_size
 WKV 内部始终 fp32。LoRA 的 A/B 在 `bf16-full` 下仍然保持 fp32，
 前向时按输入 dtype 转换，梯度累积在 fp32 参数里。
 
+**加载时会按目标精度显式转换**（包括 fp32 上转）。官方 checkpoint 通常是 bf16，
+如果 `precision: fp32` 却保留 bf16 参数，CPU 上的反向传播会慢约 75 倍
+（实测 42s vs 0.57s / step）；GPU 上则通常希望保持 bf16 省显存。因此
+`runner.py` 在加载后立刻 `model.to(dtype=target)`，日志会打印
+`模型参数 dtype -> ...`。
+
 ## 9. 分布式
 
 | 方式 | 实现 | 备注 |
@@ -270,3 +276,9 @@ c10d rendezvous 在部分 Windows / 精简 PyTorch 上的 `libuv` 问题；用�
 5. 所有保存都必须经过 `atomic_save`（先写临时文件再替换）。
 6. 分块前向必须与整段前向数值等价；新增后端要过 `tests/test_wkv.py` 的
    float64 对照。
+7. **生成 prompt 的分词结果必须是训练文本分词的前缀**。训练时
+   `"Assistant: "` 的尾空格会被贪心分词并入回答首 token；推理必须用
+   `ChatTemplate.generation_prompt()`（去掉尾空格、保留换行），否则过拟合模型
+   会跑偏。`tests/test_dataset.py` 对 rwkv_world / chatml 都有断言。
+8. 模型加载后必须按目标精度显式转换（含 fp32 上转），不要只在
+   `dtype != fp32` 时转换。

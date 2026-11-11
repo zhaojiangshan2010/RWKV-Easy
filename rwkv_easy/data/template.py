@@ -94,6 +94,21 @@ class ChatTemplate:
             f"assistant={self.assistant_prefix!r}, sep={self.turn_separator!r}"
         )
 
+    def generation_prompt(self, text: str) -> str:
+        """构造推理用的 prompt（只到 ``Assistant:`` 为止）。
+
+        为什么末尾要去掉空格：训练文本是 ``assistant_prefix + content``，分词器
+        会把 ``"Assistant: "`` 的空格贪心并入 content 的第一个 token（例如
+        ``" RW"``）。推理时如果 prompt 以独立空格结尾，上下文就与训练时
+        （以 ``":"`` 结尾）不一致；对过拟合模型会直接跑偏。
+
+        只去掉**空格**、不去掉换行：chatml 的前缀以 ``"\\n"`` 结尾，需要保留。
+        """
+        return (
+            f"{self.user_prefix}{text}{self.turn_separator}"
+            f"{self.assistant_prefix.rstrip(' ')}"
+        )
+
 
 def build_template(
     name: str = "rwkv_world",

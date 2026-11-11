@@ -124,8 +124,17 @@ def run_training(
                 log=log if dist.is_main else None,
             )
 
+        # ---- 精度：先按目标 dtype 定型，再做校准 ----
+        # 关键：bf16 checkpoint + `precision: fp32` 时必须真的上转。CPU 上 bf16
+        # 参数的反向传播比 fp32 慢两个数量级（实测 42s vs 0.57s / step）。
+        dtype = _model_dtype(cfg)
+        if next(model.parameters()).dtype != dtype:
+            model = model.to(dtype=dtype)
+            if dist.is_main:
+                log.info("模型参数 dtype -> %s", dtype)
+
         # ---- decay 自动校准（需要 tokenizer + device） ----
-        # 只在 rank0 上做，然后广播结果；校准期间保持 fp32 以获得干净的比较。
+        # 只在 rank0 上做，然后广播结果。
         if cfg.model.decay == "auto":
             model.to(device)
             if dist.is_main:
@@ -146,13 +155,6 @@ def run_training(
                 log.info("decay 选择：%s", model.decay_mode)
         else:
             model.set_decay_mode(cfg.model.decay)
-
-        # ---- 精度 ----
-        dtype = _model_dtype(cfg)
-        if dtype != torch.float32:
-            model = model.to(dtype=dtype)
-            if dist.is_main:
-                log.info("模型参数 dtype -> %s", dtype)
 
         # ---- 方法：LoRA / State Tuning ----
         # 重新播种，保证多卡上 LoRA 的随机初始化完全一致。

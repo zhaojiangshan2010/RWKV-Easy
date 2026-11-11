@@ -11,6 +11,9 @@ rwkv-easy doctor
 
 报 bug 时请附上 `rwkv-easy doctor --json` 的输出和 `runs/<实验>/train.log` 的末尾。
 
+- 新下载的权重怎么验收、乱码怎么判断 → [`MODEL_CHECK.md`](MODEL_CHECK.md)
+- CPU 上能验证什么、怎么复现 → [`CPU_VERIFICATION.md`](CPU_VERIFICATION.md)
+
 ---
 
 ## 安装
@@ -59,6 +62,33 @@ infctx 下把 `chunk_ctx` 从 512 降到 256。
 **推理/生成时 OOM**
 `generate` 是一次前向 + 逐 token，显存需求比训练小，但 logits 仍然是
 `(1,T,vocab)`。降低 `--max-tokens` 或提示词长度。
+
+---
+
+## 性能
+
+**CPU 上每步要几十秒**
+先看启动日志里有没有这一行：
+
+```
+模型参数 dtype -> torch.float32
+```
+
+官方 checkpoint 是 bf16，而 **CPU 上 bf16 参数的反向传播比 fp32 慢约 75 倍**
+（实测 42s vs 0.57s / step）。本项目在 `precision: fp32` 时会自动上转；如果没有
+这行日志，检查是不是用了 `precision: bf16-full`，或手动改过 `model.dtype`。
+CPU 上请一律用 `precision: fp32`。
+
+**GPU 上比预期慢**
+- 确认 `model.backend: native` 时可以在 CUDA 上用 `torch.backends.cuda.matmul.allow_tf32`
+  （默认已开启）；想要更快可以装 `rwkv-fla` 并设 `model.backend: fla`
+  （要求 `decay: softplus`）；
+- `chunk_ctx` 太小会让分块串行开销占比变高，显存允许时适当增大；
+- `micro_batch_size` 太小会导致 GPU 利用率不足，配合 `grad_accum` 调大。
+
+**第一次启动很慢**
+`decay: auto` 要做 3 次 256 token 的前向（约几秒到几十秒），结果会缓存。
+之后启动不会重复。想跳过就在配置里写死 `model.decay`。
 
 ---
 
@@ -194,6 +224,16 @@ infctx 需要定长、无 padding 的样本。改 `data.mode: packed`，或关�
 ---
 
 ## 其他
+
+**过拟合后对所有问题都回答同一句 / 输出和训练时对不上**
+大概率是推理 prompt 与训练文本的 **token 边界**不一致。最典型的是
+`"Assistant: "` 末尾的空格被分词器并入回答的第一个 token（如 `" RW"`），
+而推理时它单独成了一个空格 token，模型见到的上下文就和训练时不同。
+
+- 用 `ChatTemplate.generation_prompt(text)` 构造 prompt（`rwkv-easy generate`
+  已自动处理）；
+- 确保推理模板与训练时的 `data.template` 完全一致；
+- 不要手动拼 `assistant_prefix + 内容` 之外的变体（多一个空格/换行都可能有影响）。
 
 **`torch.compile` 报错**
 关掉 `train.compile`。Windows 上首次编译也可能很慢。

@@ -174,3 +174,15 @@ def test_grad_accum_and_clip(tmp_path, tiny_checkpoint, tiny_sharegpt):
     )
     result = run_training(cfg, run_dir=tmp_path / "run")
     assert result.steps == 4
+
+
+def test_max_steps_overrides_epochs(tmp_path, tiny_checkpoint, tiny_sharegpt):
+    """max_steps 应决定总步数，而不是被 epochs=1 截断。"""
+    cfg = build_config(
+        tmp_path,
+        tiny_checkpoint(),
+        tiny_sharegpt,
+        {"train": {"max_steps": 10, "epochs": 1}, "data": {"num_workers": 0}},
+    )
+    result = run_training(cfg, run_dir=tmp_path / "run")
+    assert result.steps == 10

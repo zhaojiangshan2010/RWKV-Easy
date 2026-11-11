@@ -176,3 +176,13 @@ def test_merge_state(tmp_path, tiny_checkpoint):
     assert any("time_state" in key for key in merged.state_dict())
     for key, value in state_state_dict(model).items():
         assert torch.allclose(merged.state_dict()[key].cpu(), value)
+
+
+def test_check_model(tmp_path, tiny_checkpoint, capsys):
+    base = tiny_checkpoint(vocab_size=65536, n_layer=2, n_embd=64, head_size=16)
+    code = main(["check-model", "-m", str(base), "--max-tokens", "2"])
+    assert code == 0
+    output = capsys.readouterr().out
+    assert "RWKV-EASY 模型验收" in output
+    assert "decay 校准" in output
+    assert "结构" in output

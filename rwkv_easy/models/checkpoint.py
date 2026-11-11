@@ -297,7 +297,9 @@ def load_model_from_checkpoint(
 
     _materialize_meta(model)
 
-    if dtype is not None and dtype != torch.float32:
+    # 注意：fp32 也必须显式上转。官方 checkpoint 多为 bf16，直接拿来做 CPU 训练
+    # 会让反向传播慢两个数量级（实测 42s vs 0.57s / step）。
+    if dtype is not None and next(model.parameters()).dtype != dtype:
         model = model.to(dtype=dtype)
 
     if log is not None:

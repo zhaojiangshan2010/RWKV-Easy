@@ -1,0 +1,71 @@
+# ============================================================
+# 自我认知过拟合实验（CPU 可跑）
+#
+#   rwkv-easy train -c configs/self_identity_lora.yaml
+#
+# 目标：让模型在任何“你是什么模型 / 你是谁”的问题上固定回答
+#       “RWKV 0.1B 大模型”。
+#
+# 数据只有 56 条短对话，故意让它过拟合；训练后 merged.pth 可直接 generate。
+# ============================================================
+
+run:
+  name: self-identity
+  output_dir: runs
+  seed: 42
+
+model:
+  path: models/rwkv7-g1d-0.1b-20260129-ctx8192.pth
+  decay: auto
+  backend: native
+  wkv_chunk: 64
+
+train:
+  method: lora
+  infctx: false
+  ctx_len: 64
+  micro_batch_size: 2
+  grad_accum: 1
+  epochs: 1
+  max_steps: 400
+  lr: 2.0e-3
+  min_lr: 1.0e-4
+  warmup_steps: 10
+  lr_schedule: cosine
+  weight_decay: 0.0
+  grad_clip: 1.0
+  precision: fp32                      # CPU 必须 fp32
+  grad_checkpoint: false               # 序列很短，不需要
+  log_every: 25
+  save_every_steps: 100
+  save_every_epochs: 0
+  keep_last: 4
+  merge_at_end: true
+
+lora:
+  rank: 32
+  alpha: 64
+  dropout: 0.0
+  target_modules:
+    - att.receptance
+    - att.key
+    - att.value
+    - att.output
+    - ffn.key
+    - ffn.value
+
+data:
+  path: examples/self_identity.json
+  mode: sample                         # 一条对话一个样本，短样本不互相切碎
+  template: rwkv_world
+  train_on: assistant
+  append_eos: end
+  num_workers: 0
+  num_proc: 0
+  cache: true
+
+dist:
+  mode: single
+
+log:
+  jsonl: true

@@ -184,9 +184,13 @@ class Trainer:
             )
         self.steps_per_epoch = math.ceil(self.micro_per_epoch / self.grad_accum)
         if cfg.train.max_steps is not None:
+            # 与 HuggingFace Trainer 一致：给了 max_steps 就以它为准，epochs 只用来
+            # 决定“最多循环几轮”；否则会出现“日志说 20 步、实际 1 个 epoch 就停”的困惑。
             self.total_steps = int(cfg.train.max_steps)
+            self.max_epochs = max(1, math.ceil(self.total_steps / self.steps_per_epoch))
         else:
             self.total_steps = self.steps_per_epoch * int(cfg.train.epochs)
+            self.max_epochs = int(cfg.train.epochs)
 
         # 优化器 / 调度器
         self.optimizer = build_optimizer(model, cfg.train)
@@ -378,7 +382,7 @@ class Trainer:
 
         last_adapter: Path | None = None
         stop = self.step >= self.total_steps
-        for epoch in range(self.start_epoch, int(cfg.train.epochs)):
+        for epoch in range(self.start_epoch, self.max_epochs):
             if stop or self.step >= self.total_steps:
                 break
             self._set_epoch(epoch)

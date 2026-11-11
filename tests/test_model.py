@@ -315,3 +315,17 @@ def test_official_lowrank_dims_61_layers():
     assert layer.a1.shape == (4096, 192)
     assert layer.v1.shape == (4096, 128)
     assert layer.g1.shape == (4096, 384)
+
+
+def test_load_upcasts_bf16_checkpoint_to_fp32(tmp_path, tiny_checkpoint):
+    """官方 checkpoint 多为 bf16；指定 fp32 时必须真的上转（CPU 反传快 70 倍）。"""
+    path = tiny_checkpoint(vocab_size=256, n_layer=2, n_embd=32, head_size=8)
+    state = torch.load(path, map_location="cpu", weights_only=True)
+    bf16_path = tmp_path / "bf16.pth"
+    torch.save({k: v.to(torch.bfloat16) for k, v in state.items()}, bf16_path)
+
+    model, _, _ = load_model_from_checkpoint(bf16_path, dtype=torch.float32)
+    assert next(model.parameters()).dtype == torch.float32
+
+    keep, _, _ = load_model_from_checkpoint(bf16_path)
+    assert next(keep.parameters()).dtype == torch.bfloat16
