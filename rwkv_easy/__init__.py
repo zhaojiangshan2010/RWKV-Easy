@@ -9,7 +9,8 @@
 
 典型用法::
 
-    rwkv-easy init --model models/rwkv7.pth --data data/sharegpt.json
+    python quickstart.py                 # 安装 + 交互式向导
+    rwkv-easy wizard                     # 已安装后直接进向导
     rwkv-easy train -c configs/my_lora.yaml
 
 参见 ``README.md`` 与 ``docs/``。
@@ -17,6 +18,6 @@
 
 from __future__ import annotations
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 __all__ = ["__version__"]

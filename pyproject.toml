@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rwkv-easy"
-version = "0.2.0"
+version = "0.3.0"
 description = "RWKV-EASY: 面向新手的 RWKV-7 LoRA / State Tuning 训练器（支持 infctx 与 ShareGPT）"
 readme = "README.md"
 requires-python = ">=3.10"

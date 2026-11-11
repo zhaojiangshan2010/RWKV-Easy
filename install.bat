@@ -71,6 +71,10 @@ if not "%SKIP_SELFTEST%"=="1" (
 
 echo.
 echo [RWKV-EASY] 安装完成。下一步：
+echo   懒人一键（安装 + 配置 + 训练）：
+echo       python quickstart.py
+echo.
+echo   或者手动：
 echo   1) 把 RWKV-7 权重放到 models\，把 ShareGPT 数据放到 data\
 echo   2) python -m rwkv_easy init --model models\你的模型.pth --data data\sharegpt.json
 echo   3) python -m rwkv_easy train -c configs\my-lora-run.yaml

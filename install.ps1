@@ -61,6 +61,8 @@ if ($env:SKIP_SELFTEST -ne "1") {
 
 Write-Host ""
 Say "安装完成。下一步："
+Write-Host "  懒人一键（安装 + 配置 + 训练）： python quickstart.py"
+Write-Host "  或者手动："
 Write-Host "  1) 把 RWKV-7 权重放到 models\，把 ShareGPT 数据放到 data\"
 Write-Host "  2) python -m rwkv_easy init --model models\你的模型.pth --data data\sharegpt.json"
 Write-Host "  3) python -m rwkv_easy train -c configs\my-lora-run.yaml"

@@ -3,6 +3,7 @@
 命令一览::
 
     rwkv-easy init       生成一份带注释的配置
+    rwkv-easy wizard     交互式一键配置并训练（新手推荐）
     rwkv-easy train      开始训练
     rwkv-easy merge      把 LoRA / State 权重合并成完整模型
     rwkv-easy inspect-data  检查数据集与 loss mask
@@ -42,6 +43,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="RWKV-EASY：RWKV-7 LoRA / State Tuning 训练器",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""示例：
+  rwkv-easy wizard     交互式一键配置并训练（新手推荐）
   rwkv-easy init --model models/rwkv7.pth --data data/sharegpt.json
   rwkv-easy train -c configs/my_lora.yaml
   rwkv-easy merge --base models/rwkv7.pth --adapter runs/xxx/adapter-step0000100.pth --out merged.pth
@@ -129,6 +131,12 @@ def build_parser() -> argparse.ArgumentParser:
     check.add_argument("--backend", default="native", choices=["native", "reference", "fla"])
     check.add_argument("--sample", action="store_true", help="采样（默认贪心）")
 
+    # -- wizard ---------------------------------------------------------
+    wiz = sub.add_parser("wizard", help="交互式一键配置并训练（新手推荐）")
+    wiz.add_argument("--non-interactive", action="store_true", help="分行问答（无 TTY / 脚本）")
+    wiz.add_argument("--no-train", action="store_true", help="只生成配置，不启动训练")
+    wiz.add_argument("-o", "--output", default=None, help="配置文件输出路径")
+
     return parser
 
 
@@ -146,6 +154,7 @@ def main(argv: list[str] | None = None) -> int:
 
     commands = {
         "train": cmd_train,
+        "wizard": cmd_wizard,
         "init": cmd_init,
         "merge": cmd_merge,
         "doctor": cmd_doctor,
@@ -226,6 +235,25 @@ def cmd_train(args: argparse.Namespace) -> int:
             f"-o {result.run_dir / 'merged.pth'}"
         )
     return 0
+
+
+# --------------------------------------------------------------------------- #
+# wizard
+# --------------------------------------------------------------------------- #
+
+
+def cmd_wizard(args: argparse.Namespace) -> int:
+    from .wizard import WizardCancelled, run_wizard
+
+    try:
+        return run_wizard(
+            non_interactive=bool(args.non_interactive),
+            no_train=bool(args.no_train),
+            output=args.output,
+        )
+    except (WizardCancelled, KeyboardInterrupt):
+        print("\n已取消。")
+        return 130
 
 
 # --------------------------------------------------------------------------- #

@@ -65,6 +65,10 @@ fi
 
 echo
 say "安装完成。下一步："
+echo "  懒人一键（安装 + 配置 + 训练）："
+echo "       python quickstart.py"
+echo
+echo "  或者手动："
 echo "  1) 准备模型与数据"
 echo "       mkdir -p models data"
 echo "       # 把 RWKV-7 的 .pth 放到 models/，把 ShareGPT 数据集放到 data/"

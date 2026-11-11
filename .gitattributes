@@ -10,6 +10,7 @@
 *.txt  text eol=lf
 *.json text eol=lf
 *.cfg  text eol=lf
+*.svg  text eol=lf
 
 # Windows 脚本保持 CRLF
 *.bat  text eol=crlf
