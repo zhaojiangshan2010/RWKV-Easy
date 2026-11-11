@@ -473,11 +473,17 @@ GPU（24GB Ampere 级，0.1B，bf16）：
 | LoRA | native（clampw） | ctx 512 / bsz 4 | ≈3.9–5.0K tok/s | 5.8 GiB |
 | LoRA | **fla**（clampw） | ctx 512 / bsz 4 | **≈13.7–16.1K tok/s** | 4.4 GiB |
 | LoRA | native（clampw） | ctx 1024 / bsz 2 | ≈2.5–2.8K tok/s | 5.8 GiB |
-| LoRA + infctx | native（clampw） | ctx 4096 / chunk 512 / bsz 1 | ≈700 tok/s | 3.7 GiB |
-| LoRA + infctx | **fla**（clampw） | ctx 1024 / chunk 256 / bsz 1 | ≈1.2K tok/s | 1.8 GiB |
-| State | native（clampw） | ctx 512 / bsz 4 | ≈5.1–5.6K tok/s | 5.3 GiB |
+| LoRA + infctx | native（clampw） | ctx 1024 / chunk 256 / bsz 1 | ≈470 tok/s | 1.9 GiB |
+| LoRA + infctx | **fla**（clampw） | ctx 1024 / chunk 256 / bsz 1 | **≈1.37K tok/s** | 1.8 GiB |
+| State | native（clampw） | ctx 512 / bsz 4 | ≈4.3–5.6K tok/s | 5.3 GiB |
+| State | **fla**（clampw） | ctx 512 / bsz 4 | **≈23K tok/s** | 4.1 GiB |
 | fp16 / DeepSpeed ZeRO-2 | native | ctx 512 / bsz 2 | ≈2.3–2.5K tok/s | 3.4 GiB |
 | DeepSpeed ZeRO-2 | **fla**（clampw） | sample ctx 64 / bsz 2 | 首次编译 ~42s，之后正常 | 1.5 GiB |
+
+**同配置对比才有意义**：State 在 ctx512/bsz4 下 native 4.35K → fla 22.95K；
+infctx 在 ctx1024/chunk256 下 native 470 → fla 1.37K。不同 `ctx_len` /
+`micro_batch_size` 的绝对 tok/s 不能直接比较——每步 token 数越少，固定开销占比越高，
+两边都会显得“慢”。
 
 `fla` 在 CUDA 上明显更快，且支持官方权重的 `clampw`，不需要改衰减口径。
 用 fla 时建议保持 `precision: bf16`：它的内核内部按 bf16 累加，纯 fp32 输入

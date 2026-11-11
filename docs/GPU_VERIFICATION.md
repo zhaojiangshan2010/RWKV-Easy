@@ -14,10 +14,13 @@ DeepSpeed 0.19.8、**rwkv-fla 0.7.202508221413**（这次可以正常导入）�
 - 真实权重在 GPU 上：加载、decay 校准、生成、LoRA、State、infctx、合并、
   fp16、bf16-full、DeepSpeed ZeRO-2 **全部跑通**。
 - **rwkv-fla 这次验证通过**：torch 2.14 / triton 3.8 不再有版本障碍。
-  它支持官方权重的 `clampw`，不需要改成 softplus；0.1B / ctx512 / bsz4
-  实测 **13.7–16.1K tok/s**，同配置 native 约 3.9K，显存 4.4 vs 5.8 GiB。
+  它支持官方权重的 `clampw`，不需要改成 softplus；同配置下全面快于 native：
+  LoRA 3.9K → 13.7–16.1K、State 4.35K → 22.95K、infctx 470 → 1.37K tok/s，
+  显存也更低。
 - 速度对 0.1B 小模型仍是 **launch-overhead 限制**，但 fla 的融合内核把
-  WKV 的数百个小算子消掉了，所以提升接近一个数量级。
+  WKV 的数百个小算子消掉了，所以提升接近一个数量级；`sample ctx64/bsz2`
+  这种每步只有几百 token 的场景，两边都被固定开销主导（~0.2s/step），
+  不能拿它的 tok/s 去和 `ctx512/bsz4` 比。
 - native + softplus 在真实权重上只有约 130 tok/s：这些权重的 log-decay
   在 -2～-7，块内累计衰减很大，native 必须把块长压到 8 左右。不是 bug，
   是 native 算法的保守边界；CUDA 上应改用 fla。
@@ -32,10 +35,10 @@ DeepSpeed 0.19.8、**rwkv-fla 0.7.202508221413**（这次可以正常导入）�
 | LoRA（72 个线性层） | native / clampw | ctx 512，bsz 4，bf16，无梯度检查点 | ≈3.9–5.0K tok/s（≈0.5 s/step） | 5.8 GiB |
 | LoRA | **fla** / clampw | ctx 512，bsz 4，bf16 | **≈13.7–16.1K tok/s** | 4.4 GiB |
 | LoRA | native / clampw | ctx 1024，bsz 2，bf16 | ≈2.5–2.8K tok/s | 5.8 GiB |
-| LoRA + infctx | native / clampw | ctx 4096 / chunk 512，bsz 1，梯度检查点 | ≈700 tok/s | 3.7 GiB |
-| LoRA + infctx | **fla** / clampw | ctx 1024 / chunk 256，bsz 1，梯度检查点 | ≈1.2K tok/s | 1.8 GiB |
-| State Tuning | native / clampw | ctx 512，bsz 4，bf16 | ≈5.1–5.6K tok/s | 5.3 GiB |
-| State Tuning | **fla** / clampw | sample ctx 64，bsz 2，bf16 | ≈600 tok/s | 1.2 GiB |
+| LoRA + infctx | native / clampw | ctx 1024 / chunk 256，bsz 1，梯度检查点 | ≈470 tok/s | 1.9 GiB |
+| LoRA + infctx | **fla** / clampw | ctx 1024 / chunk 256，bsz 1，梯度检查点 | **≈1.37K tok/s** | 1.8 GiB |
+| State Tuning | native / clampw | ctx 512，bsz 4，bf16 | ≈4.35K tok/s | 5.3 GiB |
+| State Tuning | **fla** / clampw | ctx 512，bsz 4，bf16 | **≈22.95K tok/s** | 4.1 GiB |
 | fp16 混合精度 | native | ctx 512，bsz 2 | ≈2.5K tok/s | 3.4 GiB |
 | DeepSpeed ZeRO-2（单卡） | native | ctx 512，bsz 2，bf16 | ≈2.3K tok/s | 3.4 GiB |
 | DeepSpeed ZeRO-2（单卡） | **fla** | sample ctx 64，bsz 2，bf16 | 首次编译 ~42s，之后正常 | 1.5 GiB |
@@ -43,6 +46,16 @@ DeepSpeed 0.19.8、**rwkv-fla 0.7.202508221413**（这次可以正常导入）�
 | 全量测试（CPU + GPU） | — | 103 个测试 | 85 秒 | — |
 
 `tok/s` 是日志里的含 padding token 吞吐；peak 为 `torch.cuda.max_memory_allocated`。
+
+> **只看同配置对比**：上表的 native/fla 行已尽量使用相同 `ctx_len`、`chunk_ctx`、
+> `micro_batch_size`。不同配置的绝对 tok/s 不可直接比较——每步 token 数越少，
+> 固定开销占比越高，两边都会显得“慢”。同配置下 fla 全面更快：
+> State ctx512/bsz4 4.35K → 22.95K；infctx ctx1024/chunk256 470 → 1.37K。
+>
+> 早期表格里 State fla 用了 `sample ctx64/bsz2`（约 600 tok/s），而 native
+> 用了 `ctx512/bsz4`（约 5.3K），看起来像 fla 慢了 9 倍，实际是配置不同；
+> 同为 `sample ctx64/bsz2` 时 native 约 500 tok/s，fla 约 600 tok/s。
+
 0.1B / ctx512 / bsz4 的 loss 曲线在 native 与 fla 下几乎重合：
 
 ```

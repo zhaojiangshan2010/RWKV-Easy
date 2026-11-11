@@ -36,6 +36,9 @@
 - 103 个测试通过（GPU 上含 5 个 fla 对照；CPU 上跳过）。
 - 0.1B / ctx512 / bsz4 / bf16：native clampw 约 3.9K tok/s（5.8 GiB），
   fla 约 13.7–16.1K tok/s（4.4 GiB），loss 曲线基本重合。
+- 同配置下 fla 全面更快：State ctx512/bsz4 4.35K → 22.95K；
+  infctx ctx1024/chunk256 470 → 1.37K。不同 `ctx_len`/`bsz` 的绝对 tok/s
+  不可直接比较（每步 token 越少，固定开销占比越高）。
 - fla + infctx、fla + State、fla + DeepSpeed ZeRO-2 均跑通。
 - fla 训练出的 State 适配器合并后，`generate` 正确回答 `RWKV 0.1B 大模型`。
 
