@@ -1,5 +1,39 @@
 # 变更记录
 
+## 0.2.0 — 2026-11-12
+
+性能与 infctx 架构升级：0.1B 在 24GB 卡上的整段 LoRA 从 13.7–16.1K 提升到
+**37.0K tok/s**，infctx 真正做成 `O(chunk_ctx)` 显存。
+
+### 新增
+
+- **`train.infctx_backward`（默认 true）**：每个 chunk 立即 backward，
+  只保留 detach 后的循环状态；8K ctx 显存 12.4 → 4.7 GiB，0.1B 可训
+  32K 上下文。DDP/DeepSpeed/`infctx_detach=false` 自动回退旧路径。
+- **`precision: bf16-full` 成为 GPU 模板默认**：基座 bf16、LoRA/time_state
+  仍为 fp32；0.1B ctx512/bsz16 吞吐 +46%，显存 14.6 → 8.9 GiB。
+- 新增 `tests/test_infctx_backward.py`、`tests/test_l2wrap.py`；
+  测试总数 108。
+
+### 性能
+
+- fla LoRA：37.0K tok/s（ctx512/bsz32，15.4 GiB）；State：43.0K（12.8 GiB）。
+- native LoRA：20.1–20.3K tok/s（bsz24–26，wkv_chunk 64），比最初 3.9K 提升 5 倍。
+- infctx：ctx8192/chunk2048/bsz10 37.0K；chunk4096/bsz4 34.9K；
+  ctx32768/chunk2048/bsz2 32.1K（4.7 GiB）。
+- State + infctx：66.5K tok/s（4.0 GiB，只有第一块需要反传）。
+- L2Wrap 改为在 CE 梯度上原地 `scatter_add`，省掉每步 2 GiB 全量梯度；
+  闭包只捕获 max_value/indices，修复引用环泄漏。
+- native 缓存下三角掩码，`solve_triangular` 用 `unitriangular=True`。
+
+### 试过但没有保留
+
+- `torch.compile`：整段训练没有稳定收益（GPU-bound）。
+- bf16 交叉熵 / bf16 GroupNorm：没有收益。
+- native 合并 4 个块内 matmul + 4D 布局：算子级略快，但显存更高、大 batch
+  下 OOM，已回退。
+- TF32、native chunk 128：没有收益或直接 OOM。
+
 ## 0.1.1 — 2026-11-11
 
 第二次 GPU 验证（torch 2.14.1 + CUDA 13.0 + triton 3.8.0）。这一版的主题是

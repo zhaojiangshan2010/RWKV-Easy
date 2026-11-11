@@ -162,10 +162,18 @@ ModelState
 
 ```
 state = model.initial_state(B)        # 若有 State Tuning，用 time_state 作为初值
+total_tokens = count(labels != -100)
 for chunk in split(ids, labels, chunk_ctx):
-    logits, state = checkpoint(model.forward_chunk, chunk, state)
-    loss = 加权合并各块 CE（按有效 token 数）
-    state = state.detach() if infctx_detach
+    logits, state = forward_chunk(chunk, state)
+    loss_k = CE(logits, labels_k)
+
+    if infctx_backward:               # 默认；单进程
+        backward(loss_k * tokens_k / total_tokens / grad_accum)
+        state = state.detach()        # 立刻释放本块激活
+    else:                             # DDP / DeepSpeed / 显存充足
+        total_loss += loss_k * tokens_k
+        state = state.detach() if infctx_detach
+backward(total_loss / total_tokens)   # 仅旧路径
 ```
 
 几个容易搞错的点：
@@ -174,11 +182,17 @@ for chunk in split(ids, labels, chunk_ctx):
 2. **块边界 token 也参与预测**：`labels` 是整段预先算好的，
    所以第 k 块最后一个 token 的 label 就是第 k+1 块的第一个 token。
 3. **loss 按 token 加权合并**，最终值等价于整段 mean CE。
-4. **默认 detach**：块间不反传，显存只与 `chunk_ctx` 有关。
-   设 `infctx_detach: false` 可以全量反传，但显存会成倍增长。
-5. **每块都用 `torch.utils.checkpoint`**，激活不保留，反向时重算。
+4. **默认每块立即 backward**（`train.infctx_backward: true`）：激活只保留当前块，
+   显存真正是 `O(chunk_ctx)`。0.1B 可训 32K 上下文（4.7 GiB）。
+   DDP / DeepSpeed 暂时回退到“所有块 loss 累加、最后统一 backward”，
+   显存会随 `ctx_len` 增长。
+5. **detach 是默认**：块间不反传，等价于截断 BPTT。设 `infctx_detach: false`
+   会关闭 per-chunk backward（否则图已被释放），走全量 BPTT，显存成倍增长。
+6. **梯度检查点可选**：per-chunk backward 已经限制了激活，通常不再需要
+   `grad_checkpoint`（0.1B 实测关掉后 32.5K vs 23.7K tok/s）。
 
-`tests/test_model.py` 断言：分块前向与整段前向的输出误差 < 1e-5。
+`tests/test_model.py` 断言：分块前向与整段前向的输出误差 < 1e-5；
+`tests/test_infctx_backward.py` 断言新旧两条 backward 路径的 loss 与梯度一致。
 
 ## 5. 为什么自己写 LoRA
 
@@ -307,25 +321,30 @@ DeepSpeed 的两个额外处理：
    会跑偏。`tests/test_dataset.py` 对 rwkv_world / chatml 都有断言。
 8. 模型加载后必须按目标精度显式转换（含 fp32 上转），不要只在
    `dtype != fp32` 时转换。
+9. `infctx_backward` 只在 `infctx_detach=true` 且单进程后端启用；
+   它会在每个 chunk 结束后释放图，不能与跨块 BPTT 混用。
 
 ## 11. 性能画像
 
-实测（0.1B，24GB Ampere 级 GPU，ctx512/bsz4）单步约 365ms，但 GPU kernel
-只占 ~100ms，其余是数百个小算子的启动空档。profile 里最大项是 elementwise
-（~44ms）、fp32 SGEMM（~34ms，WKV 后端）、DtoD copy（~10ms）。
+0.1B / ctx512 / bf16-full / fla：bsz32 单步约 443ms（8192 token），
+**37K tok/s ≈ 41 TFLOPS**；State bsz32 约 43K tok/s ≈ 49 TFLOPS。
+设备 bf16 matmul 峰值 62–74 TFLOPS，已经用到 60–75%。
 
-因此：
+profile（bsz24）里 GPU 时间大致是：elementwise ~38%、`aten::mm` ~26%、
+`aten::copy_` ~17%、fla WKV ~9%。因此：
 
-- **batch 增大几乎不增加单步时间**（bsz1 365ms → bsz8 378ms），吞吐线性涨；
-- `wkv_chunk` 从 64 提到 96（native 上限）减少分块数：365→307ms；
-- `torch.compile` 融合大量 elementwise：365→277ms；
-- 两者叠加：262ms/step。
+- **`bf16-full` 是最大单项收益**：基座权重直接 bf16，消掉 autocast 每次
+  Linear 的 fp32→bf16 权重转换；LoRA/time_state 仍是 fp32。
+  bsz16：23.8K → 34.8K tok/s，显存 14.6 → 8.9 GiB；
+- **batch 要加大**：fla bsz4→32 从 17.4K 涨到 37.0K；bsz40 开始饱和；
+- `torch.compile` 没有稳定收益（GPU-bound，fla 已是融合内核）；
+- `wkv_chunk` 只影响 native；clampw 下关闭动态分块检查，避免每块 `.item()`；
+- L2Wrap 改为在原地梯度上 scatter_add，省掉每步 2 GiB 全量梯度；
+- infctx 每个 chunk 立即 backward，显存从 O(ctx_len) 变成 O(chunk_ctx)：
+  8K ctx 12.4 → 4.7 GiB，32K ctx 也能在 24GB 卡上训练。
 
-native 后端在 clampw 模式下关闭了动态分块检查（`dynamic_split=False`），避免
-每个分块一次 `.item()` 的 GPU 同步；softplus/exp 模式会先用一次 reduce 估算
-安全块长。真实权重的 softplus log-decay 约为 -2～-7，块长会被压到 8 左右，
-吞吐降到约 130 tok/s——这类场景在 CUDA 上应该直接用 fla。
+native 在 clampw 下用 bsz24–26 可到 20.1–20.3K tok/s；softplus/exp 模式会先用
+一次 reduce 估算安全块长，真实权重的 softplus log-decay 约为 -2～-7，
+块长会被压到 8 左右，吞吐降到约 130 tok/s——CUDA 上应直接用 fla。
 
-fla 后端（0.1B，ctx512/bsz4，bf16）实测 **13.7–16.1K tok/s、4.4 GiB**，
-同配置 native 约 3.9K tok/s、5.8 GiB；loss 曲线与 native 基本重合。
-详细数字见 [`GPU_VERIFICATION.md`](GPU_VERIFICATION.md)。
+详细数字与复现命令见 [`GPU_VERIFICATION.md`](GPU_VERIFICATION.md)。

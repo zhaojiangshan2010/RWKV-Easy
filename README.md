@@ -15,11 +15,12 @@
 | 范围 | 状态 |
 |---|---|
 | 数学正确性（WKV 前向/梯度、infctx 等价性、LoRA 合并） | ✅ CPU 上与 float64 参考对照，误差 < 1e-5；fla 与 fp64 相对误差 ~3e-3（bf16 内核） |
-| 数据管线（ShareGPT、completion-only mask、packed/sample） | ✅ 103 个测试覆盖（其中 5 个 fla 测试需要 CUDA） |
+| 数据管线（ShareGPT、completion-only mask、packed/sample） | ✅ 108 个测试覆盖（其中 5 个 fla 测试需要 CUDA） |
 | 端到端（训练、断点、合并、重载、bf16、2 进程 DDP） | ✅ CPU 上验证通过 |
 | 真实 RWKV-7 权重 | ✅ `rwkv7-g1d-0.1b` 在 CPU 与 GPU 上都已验收：decay=clampw，NLL 2.54，续写连贯 |
 | GPU 训练（LoRA / State / infctx / fp16 / DeepSpeed） | ✅ 24GB Ampere 级 GPU 全跑通，数字见 [`docs/GPU_VERIFICATION.md`](docs/GPU_VERIFICATION.md) |
-| rwkv-fla（Triton 后端） | ✅ torch 2.14 + CUDA 13 + triton 3.8 实测通过；支持 clampw / softplus / exp，0.1B ctx512 约 14K tok/s（native 约 3.9K） |
+| rwkv-fla（Triton 后端） | ✅ torch 2.14 + CUDA 13 + triton 3.8 实测通过；支持 clampw / softplus / exp，0.1B 最高 37K tok/s（LoRA）/ 43K（State） |
+| infctx 显存 | ✅ 每块即时反传，显存 ∝ `chunk_ctx`；0.1B 在 24GB 卡上可训 **32K 上下文（4.7 GiB）** |
 
 本机（Windows + CPU）已验证的内容与复现命令见
 [`docs/CPU_VERIFICATION.md`](docs/CPU_VERIFICATION.md)。
@@ -58,7 +59,9 @@
 - **衰减公式自动校准**：不同版本的 RWKV-7 实现使用不同的 decay 参数化，用错不会报错、
   但模型输出会明显变差。RWKV-EASY 会用一段内置中英文本自动比较三种公式，选 loss 最低的那个。
 - **CUDA 上可选 Triton 加速**：`model.backend: fla` 直接调用 rwkv-fla 的融合内核，
-  0.1B 实测比纯 PyTorch 快约 4 倍，且支持官方权重使用的 `clampw`（不强制改衰减口径）。
+  0.1B 实测比纯 PyTorch 快约 1.8–14 倍（整段/长上下文），且支持官方权重的 `clampw`。
+- **infctx 真正省显存**：每个 chunk 立即 backward，显存只与 `chunk_ctx` 有关，
+  0.1B 在 24GB 卡上可以训 32K 上下文（4.7 GiB）。
 - **CPU 可完整自检**：`rwkv-easy selftest` 不需要下载任何权重，几分钟内跑完
   训练 → infctx → 保存 → 合并 → 重新加载 的完整链路。
 
@@ -216,7 +219,7 @@ python -m rwkv_easy train -c configs/my-lora-run.yaml --resume runs/xxx
 WKV 算子是纯 PyTorch 写的，所以整条链路都能在 CPU 上验证。三条命令：
 
 ```bash
-python -m pytest tests -q                      # 103 个测试（5 个 fla 测试需要 CUDA，CPU 上跳过）
+python -m pytest tests -q                      # 108 个（CPU 上 103 passed + 5 fla skipped）
 python -m rwkv_easy selftest --full            # lora/state × infctx on/off × fp32/bf16
 python -m rwkv_easy train -c configs/debug_cpu.yaml   # 随机小模型，20 步
 ```
@@ -466,35 +469,40 @@ CPU（Windows，8 线程）：
 
 CPU 上一定要用 `precision: fp32`：bf16 参数的反向传播会慢约 75 倍。
 
-GPU（24GB Ampere 级，0.1B，bf16）：
+GPU（24GB Ampere 级，0.1B，bf16-full）：
 
 | 场景 | 后端 | 配置 | 速度 | 显存 |
 |---|---|---|---|---|
-| LoRA | native（clampw） | ctx 512 / bsz 4 | ≈3.9–5.0K tok/s | 5.8 GiB |
-| LoRA | **fla**（clampw） | ctx 512 / bsz 4 | **≈13.7–16.1K tok/s** | 4.4 GiB |
-| LoRA | native（clampw） | ctx 1024 / bsz 2 | ≈2.5–2.8K tok/s | 5.8 GiB |
-| LoRA + infctx | native（clampw） | ctx 1024 / chunk 256 / bsz 1 | ≈470 tok/s | 1.9 GiB |
-| LoRA + infctx | **fla**（clampw） | ctx 1024 / chunk 256 / bsz 1 | **≈1.37K tok/s** | 1.8 GiB |
-| State | native（clampw） | ctx 512 / bsz 4 | ≈4.3–5.6K tok/s | 5.3 GiB |
-| State | **fla**（clampw） | ctx 512 / bsz 4 | **≈23K tok/s** | 4.1 GiB |
-| fp16 / DeepSpeed ZeRO-2 | native | ctx 512 / bsz 2 | ≈2.3–2.5K tok/s | 3.4 GiB |
+| LoRA | **fla**（clampw） | ctx 512 / bsz 32 | **≈37.0K tok/s** | 15.4 GiB |
+| LoRA | native（clampw） | ctx 512 / bsz 24 / chunk 64 | ≈20.1K tok/s | 20.0 GiB |
+| LoRA | native（clampw） | ctx 512 / bsz 16 / chunk 96 | ≈19.0K tok/s | 15.0 GiB |
+| LoRA + infctx | **fla**（clampw） | ctx 8192 / chunk 2048 / bsz 2 | **≈32.5K tok/s** | 4.7 GiB |
+| LoRA + infctx | **fla**（clampw） | ctx 8192 / chunk 2048 / bsz 10 | **≈37.0K tok/s** | 21.7 GiB |
+| LoRA + infctx | **fla**（clampw） | ctx 32768 / chunk 2048 / bsz 2 | **≈32.1K tok/s** | 4.7 GiB |
+| LoRA + infctx | native（clampw） | ctx 8192 / chunk 2048 / bsz 2 | ≈2.3K tok/s | 7.5 GiB |
+| State | **fla**（clampw） | ctx 512 / bsz 32 | **≈43.0K tok/s** | 12.8 GiB |
+| State + infctx | **fla**（clampw） | ctx 8192 / chunk 2048 / bsz 2 | **≈66.5K tok/s** | 4.0 GiB |
 | DeepSpeed ZeRO-2 | **fla**（clampw） | sample ctx 64 / bsz 2 | 首次编译 ~42s，之后正常 | 1.5 GiB |
 
-**同配置对比才有意义**：State 在 ctx512/bsz4 下 native 4.35K → fla 22.95K；
-infctx 在 ctx1024/chunk256 下 native 470 → fla 1.37K。不同 `ctx_len` /
-`micro_batch_size` 的绝对 tok/s 不能直接比较——每步 token 数越少，固定开销占比越高，
-两边都会显得“慢”。
+**同配置对比才有意义**：不同 `ctx_len` / `chunk_ctx` / `micro_batch_size` 的绝对
+tok/s 不能直接比较。上面的 fla/native 行已经尽量固定其它变量；native + infctx
+明显慢，是因为它要在 fp32 下顺序处理 32 个小 chunk，长上下文应使用 fla。
+
+`bf16-full` 是这一轮最大的单项提升：基座权重直接是 bf16，省掉了 autocast
+每次 Linear 的 fp32→bf16 权重转换。0.1B / ctx512 / bsz16 从 23.8K 提到 34.8K
+（+46%），显存 14.6 → 8.9 GiB；LoRA 参数与 `time_state` 仍然是 fp32，精度不受影响。
 
 `fla` 在 CUDA 上明显更快，且支持官方权重的 `clampw`，不需要改衰减口径。
-用 fla 时建议保持 `precision: bf16`：它的内核内部按 bf16 累加，纯 fp32 输入
+用 fla 时建议保持 bf16 / bf16-full：它的内核内部按 bf16 累加，纯 fp32 输入
 反而会收到“内核不支持 fp32”的警告。
 
 > native + softplus 在真实权重上会明显变慢（实测约 130 tok/s）：这些权重的
 > log-decay 在 -2～-7 之间，块内累计衰减很大，必须把块长压到 8 左右才不溢出。
 > 需要 softplus + CUDA 时请直接用 fla；native 在 clampw 下不受影响。
 
-0.1B 在 GPU 上是启动开销受限（bsz 1→8 单步耗时几乎不变）；模型越大，
-计算占比越高。完整分析见 [`docs/GPU_VERIFICATION.md`](docs/GPU_VERIFICATION.md)。
+0.1B 在 GPU 上仍然受算子启动/小矩阵效率影响，但 bf16-full + fla 已经把
+吞吐从 3.9K 推到 37K（约 41 TFLOPS，设备 bf16 峰值约 62–74 TFLOPS）。
+模型越大，计算占比越高，这组数字会继续接近峰值。
 
 显存不够时，按顺序尝试：
 
@@ -508,12 +516,15 @@ infctx 在 ctx1024/chunk256 下 native 470 → fla 1.37K。不同 `ctx_len` /
 
 0.1B 这类小模型在 GPU 上是**算子启动开销受限**，不是算力受限。按收益排序：
 
-| 旋钮 | 建议 | 实测效果（0.1B, ctx512, bsz4） |
+| 旋钮 | 建议 | 实测效果（0.1B，ctx512） |
 |---|---|---|
-| `model.backend` | CUDA 上优先 `fla` | native clampw 3.9K → fla 13.7–16.1K tok/s |
-| `micro_batch_size` | 显存允许就加大 | bsz 1→8：单步 365→378ms，吞吐 1.4K→10.8K tok/s |
-| `model.wkv_chunk` | 96（native 后端上限） | 365→307 ms/step |
-| `train.compile` | `true`（首次启动慢） | 365→277 ms/step；与 chunk96 叠加 262ms/7.8K tok/s |
+| `train.precision` | GPU 用 `bf16-full` | bsz16：23.8K → 34.8K tok/s，显存 14.6 → 8.9 GiB |
+| `model.backend` | CUDA 上优先 `fla` | native 20.1K → fla 37.0K tok/s（bsz24/32） |
+| `micro_batch_size` | 显存允许就加大 | fla 从 bsz4→32：17.4K → 37.0K tok/s |
+| `model.wkv_chunk` | native 用 64/80（96 上限） | native bsz24：64→20.1K，80→20.2K |
+| `train.compile` | 默认关 | 实测没有稳定收益（GPU-bound，且 fla 已是融合内核） |
+| `train.infctx_backward` | 保持 `true` | 8K ctx：12.4 → 4.7 GiB，可训 32K |
+| `train.grad_checkpoint` | infctx 下可关 | 8K ctx：23.7K → 32.5K tok/s |
 
 `grad_checkpoint` 是内存与速度的交换：infctx 下开启约 700 tok/s、3.7GiB；
 关闭约 1.2K tok/s、11.4GiB。模型越大，上面的固定开销占比越低。
@@ -570,7 +581,7 @@ RWKV-EASY/
 │   └── assets/             # 内置词表、校准文本、示例数据
 ├── configs/                # 配置模板（含自我认知过拟合 demo）
 ├── docs/                   # 详细文档
-├── tests/                  # 103 个测试（CPU；fla 组需要 GPU，自动跳过）
+├── tests/                  # 108 个测试（CPU 上跳过 5 个 fla）
 ├── examples/               # 示例数据（ShareGPT、自我认知实验数据）
 ├── CHANGELOG.md
 ├── install.sh / .bat / .ps1
@@ -600,7 +611,7 @@ RWKV-EASY/
 
 ```bash
 pip install -e ".[dev]"
-python -m pytest tests -q            # 103 个（fla 组需要 CUDA，CPU 上跳过）
+python -m pytest tests -q            # 108 个（CPU 上跳过 5 个 fla）
 python -m rwkv_easy selftest --full  # 8 种组合
 python -m ruff check rwkv_easy tests
 ```

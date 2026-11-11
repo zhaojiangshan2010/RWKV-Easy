@@ -78,6 +78,7 @@ rwkv-easy train -c configs/lora.yaml --set train.lr=2e-4 --set data.val_ratio=0.
 | `grad_checkpoint` | bool | `true` | 激活重计算，省显存、略慢 |
 | `l2wrap` | float | `1e-4` | RWKV 的 L2Wrap 稳定项；设 0 关闭 |
 | `infctx_detach` | bool | `true` | 块间是否截断梯度 |
+| `infctx_backward` | bool | `true` | 每块立即 backward（显存 ∝ chunk_ctx）；DDP/DeepSpeed 自动回退 |
 | `log_every` | int | `10` | 每多少个优化器 step 打印一次 |
 | `save_every_steps` | int | `0` | 每多少 step 保存一次；0 关闭 |
 | `save_every_epochs` | int | `1` | 每多少个 epoch 保存一次 |
@@ -93,19 +94,29 @@ rwkv-easy train -c configs/lora.yaml --set train.lr=2e-4 --set data.val_ratio=0.
 |---|---|---|---|---|
 | `fp32` | fp32 | 否 | 否 | 调试、CPU、数值验证 |
 | `fp16` | fp32 | fp16 | 是 | 老 GPU；需要 bf16 不支持时 |
-| `bf16` | fp32 | bf16 | 否 | **推荐**，稳定且省显存 |
-| `bf16-full` | bf16 | 否 | 否 | 最省显存，与官方 checkpoint 格式一致 |
+| `bf16` | fp32 | bf16 | 否 | 兼容性最好；基座权重每次 Linear 都要转 bf16 |
+| `bf16-full` | bf16 | 否 | 否 | **GPU 推荐**：基座 bf16，LoRA/time_state 仍为 fp32 |
 
-无论哪种精度，WKV 内部都用 **fp32** 计算（三角求解只支持 fp32），
-所以训练数值不会因为 bf16 而崩掉。
+> LoRA 的 A/B 与 State Tuning 的 `time_state` 始终以 **fp32** 创建，
+> 所以 `bf16-full` 只把冻结的基座权重换成 bf16：训练精度不受影响，
+> 显存和速度明显更好（0.1B 实测 +46% 吞吐、显存 14.6 → 8.9 GiB）。
+
+`native` 后端的 WKV 内部始终用 **fp32** 计算；`fla` 后端按输入 dtype
+（bf16）交给 Triton 内核，相对 fp64 的误差约 3e-3，训练足够。
 
 ### infctx 参数怎么调
 
 - `ctx_len` 是模型“看到”的总长度；
-- `chunk_ctx` 是显存单位：峰值显存与 `chunk_ctx` 线性相关；
-- `chunk_ctx: 512` + `ctx_len: 8192` = 16 块，显存约为整段训练的 1/16；
+- `chunk_ctx` 是显存单位：开启 `infctx_backward: true`（默认）后，峰值显存
+  只与 `chunk_ctx` 线性相关，与 `ctx_len` 无关；
+- `chunk_ctx: 2048` + `ctx_len: 8192` = 4 块；0.1B 在 24GB 卡上可跑到
+  32K 上下文（4.7 GiB）、37K tok/s；
 - `infctx_detach: true`（默认）意味着梯度不跨块回传，等价于截断 BPTT；
-  如果数据里长距离依赖非常重要，可以设 `false`，但显存会成倍增加。
+  如果数据里长距离依赖非常重要，可以设 `false`，但此时会回退到
+  “最后统一 backward”，显存随 `ctx_len` 增长；
+- 开启 `infctx_backward` 后通常不再需要 `grad_checkpoint: true`
+  （0.1B 实测关掉后 32.5K vs 23.7K tok/s）；
+- DDP / DeepSpeed 暂不支持 per-chunk backward，会自动走旧路径。
 
 ## `lora` —— LoRA 超参
 
@@ -206,8 +217,10 @@ target_modules: [att.receptance, att.key, att.value, att.output]
 | `model.wkv_chunk` | 速度 ↑ / 精度略降 | native 默认 64，96 是上限；fla 固定 64，此字段无效 |
 | `train.compile` | 速度 ↑ / 首次启动慢 | `torch.compile`，小模型约 +30%；Windows 首次编译较慢；fla 本身已融合，收益较小 |
 | `train.grad_checkpoint` | 显存 ↓ / 速度 ↓ | infctx 下建议开；显存充足时可关（约快 1.7 倍，显存 ×3） |
-| `train.precision` | 显存 / 速度 | GPU 用 `bf16`；CPU 必须 `fp32`（bf16 反传慢约 75 倍）；fla 也建议 bf16 |
-| `train.chunk_ctx` | 显存 ↓ / 速度 ↓ | infctx 的显存单位，越小越省显存也越慢 |
+| `train.precision` | 显存 / 速度 | GPU 用 `bf16-full`（基座 bf16、适配器 fp32）；CPU 必须 `fp32` |
+| `train.chunk_ctx` | 显存 ↓ / 速度 ↓ | infctx 的显存单位；2048 在 0.1B/0.4B 上效率最高 |
+| `train.infctx_backward` | 显存 ↓↓ | 每块立即反传，显存与 ctx_len 解耦；DDP/DS 自动回退 |
+| `train.grad_checkpoint` | 显存 ↓ / 速度 ↓ | infctx + per-chunk backward 后通常可关 |
 | `dist.mode: deepspeed` | 显存 ↓ | ZeRO 分片；单卡也能用，多卡节省优化器状态 |
 
 ## 完整示例
