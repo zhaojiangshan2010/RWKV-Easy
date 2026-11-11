@@ -183,7 +183,7 @@ backward(total_loss / total_tokens)   # 仅旧路径
    所以第 k 块最后一个 token 的 label 就是第 k+1 块的第一个 token。
 3. **loss 按 token 加权合并**，最终值等价于整段 mean CE。
 4. **默认每块立即 backward**（`train.infctx_backward: true`）：激活只保留当前块，
-   显存真正是 `O(chunk_ctx)`。0.1B 可训 32K 上下文（4.7 GiB）。
+   显存真正是 `O(chunk_ctx)`。0.1B 可训 32K 上下文（3.4 GiB）。
    DDP / DeepSpeed 暂时回退到“所有块 loss 累加、最后统一 backward”，
    显存会随 `ctx_len` 增长。
 5. **detach 是默认**：块间不反传，等价于截断 BPTT。设 `infctx_detach: false`
@@ -352,3 +352,49 @@ native 在 clampw 下用 bsz24 可到 24.3K tok/s（compile WKV 单块）；soft
 块长会被压到 8 左右，吞吐降到约 130 tok/s——CUDA 上应直接用 fla。
 
 详细数字与复现命令见 [`GPU_VERIFICATION.md`](GPU_VERIFICATION.md)。
+
+## 12. 训练 loss 与前向编译
+
+### 12.1 head 只作用于可训练 token
+
+模型有两个前向入口：
+
+```
+forward(input_ids, ...)          -> logits, state       # 推理 / 诊断
+forward_hidden(input_ids, ...)   -> hidden, state       # 训练
+```
+
+`forward` 就是 `head(forward_hidden(...))`。训练时 `Trainer._cross_entropy`
+只取 `label != -100` 的行过 `lm_head`：
+
+```
+hidden: (B,T,C) -> flat[valid] -> (N_valid,C) -> head -> (N_valid,V)
+loss = CE(logits, labels[valid], reduction="sum") / N_valid
+```
+
+数学上与「整段算 logits 再 `ignore_index`」完全等价，但 prompt token 不再
+产生 65536 维 logits。`forward_chunk_hidden` 是 infctx 的对应版本，签名与
+`forward_chunk` 相同，只是返回 hidden 而不是 logits。
+
+L2Wrap 不再单独建一份全量梯度，而是在 CE 已算出的 logits 梯度上原地
+`scatter_add_` 每行 max logit；缩放因子仍按总 token 数计算。
+
+### 12.2 `train.compile` 的两条路径
+
+`Trainer` 不再编译整个 model（之前编译结果也没被前向使用），而是按后端选择：
+
+| 后端 | 编译对象 | 原因 |
+|---|---|---|
+| fla | `model.forward_hidden` / `forward_chunk_hidden` | 融合模型 elementwise，+20% |
+| native | `backend._chunk` | 整模型会把 12 层×N 块展开，编译极慢；单块图 +18% |
+
+`compile_mode` 支持 `default` / `reduce-overhead` / `max-autotune`。
+`reduce-overhead` 会启用 CUDA graphs，State 场景还能降显存；`max-autotune`
+首次编译约 8 分钟，适合长期训练。
+
+### 12.3 infctx 的 backward 路径
+
+`infctx_backward: true`（默认）时每个 chunk 立即 backward，显存 O(chunk_ctx)；
+DDP / DeepSpeed / `infctx_detach=false` 会自动回退到「所有块 loss 累加、
+最后统一 backward」的旧路径。两条路径的 loss 与梯度一致性由
+`tests/test_infctx_backward.py` 覆盖。

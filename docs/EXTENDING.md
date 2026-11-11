@@ -130,6 +130,9 @@ class WKV7Fn(torch.autograd.Function):
 - 想自己写 Triton：按上面的契约实现 `wkv7`，注意 Triton 内核通常要求
   `T` 是块长的倍数，可以在你的后端里自行 pad（参考 `backends/fla.py`）。
   补齐位必须用 `log_decay = 0` + 全零 k/v/a/b，不能做强衰减。
+- `train.compile` 目前只内置了 fla（编译 `forward_hidden`）和 native
+  （编译 `_chunk`）两条路径；自定义后端需要自己决定编译对象，或在启动时
+  跳过 compile。
 
 ### 1.5 必须通过的测试
 

@@ -48,6 +48,9 @@ pip install -e .
 | 10 | 端到端训练 | `configs/debug_cpu.yaml` | loss 下降 | 11.30 → 11.20（20 步） |
 | 11 | 断点续训 | `tests/test_train_smoke.py::test_resume` | step 从 3 继续到 6 | 通过 |
 | 12 | 合并后重载 | `selftest` / `test_merge` | 无 `lora_` key，可正常加载 | 通过 |
+| 13 | infctx 每块反传 == 延迟反传 | `tests/test_infctx_backward.py` | loss 与全部梯度一致 | 4 组（lora/state × gc on/off）通过 |
+| 14 | 只对可训练 token 过 head | `tests/test_head_selection.py` | loss/梯度与整段 logits 等价 | 通过 |
+| 15 | L2Wrap 原地梯度 | `tests/test_l2wrap.py` | 与旧实现梯度逐元素一致 | 通过 |
 
 全套 110 个测试，CPU 上 105 passed + 5 skipped（fla 组需要 CUDA），
 约 3–6 分钟（bf16-full 在 CPU 上较慢）。
@@ -61,7 +64,7 @@ pip install -e .
 `tests/test_wkv.py` 用 `ReferenceBackend(double=True)`（float64、逐 token 标量循环）
 作为黄金参考，对照分块实现。覆盖：
 
-- 随机 `log_decay`、强衰减（触发自适应二分）、不同 `chunk`（1/3/16/64）；
+- 随机 `log_decay`、强衰减（自动缩小块长）、不同 `chunk`（1/3/16/64）；
 - 非零初始状态；
 - **所有六个输入**（r/k/v/w/a/b）的梯度；
 - bf16 输入/输出。
@@ -131,7 +134,7 @@ pip install -e .
 环境：Windows 10、Python 3.11.9、torch 2.15.0+cpu、无 GPU。
 
 ```
-pytest tests -q                                  -> 98 passed
+pytest tests -q                                  -> 105 passed, 5 skipped（fla 组）
 rwkv-easy selftest --full --steps 8              -> 自检通过（8/8 组合）
 configs/debug_cpu.yaml（20 步）                  -> loss 11.2995 -> 11.1975
 state 长跑（200 步，lr 5e-2）                    -> loss 11.2833 -> 10.9647

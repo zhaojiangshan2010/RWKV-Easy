@@ -73,14 +73,15 @@ Triton 正在编译内核，通常几十秒，之后会走缓存。DeepSpeed + f
 按顺序尝试（每一步都只改一个）：
 
 1. `train.micro_batch_size` 减半，`train.grad_accum` 翻倍；
-2. 确认 `train.grad_checkpoint: true`；
-3. `train.ctx_len` 减半，或开启 infctx：`infctx: true` + `chunk_ctx: 512`；
-4. `train.precision: bf16-full`；
-5. 多卡（DDP 或 DeepSpeed）。
+2. 确认 `train.precision: bf16-full`（基座 bf16、适配器 fp32）；
+3. infctx 下确认 `infctx_backward: true`，再把 `chunk_ctx` 从 2048 降到 1024/512；
+4. `train.grad_checkpoint: true`；
+5. `train.ctx_len` 减半，或多卡（DDP / DeepSpeed）。
 
 **显存看起来“没满”但还是 OOM**
 可能是碎片化或瞬时峰值（logits 很大）。把 `micro_batch_size` 再降一档；
-infctx 下把 `chunk_ctx` 从 512 降到 256。
+infctx 下把 `chunk_ctx` 从 2048 降到 1024/512，或先关掉 `grad_checkpoint`
+之外的额外开销（例如确认 `infctx_backward: true`）。
 
 **推理/生成时 OOM**
 `generate` 是一次前向 + 逐 token，显存需求比训练小，但 logits 仍然是
@@ -103,14 +104,14 @@ infctx 下把 `chunk_ctx` 从 512 降到 256。
 CPU 上请一律用 `precision: fp32`。
 
 **GPU 上比预期慢**
-- 先看模型规模：0.1B 这类小模型是**算子启动开销受限**，不是算力受限。
-  实测 bsz1→8 单步只从 365ms 涨到 378ms，吞吐却从 1.4K 涨到 10.8K tok/s
-  ——优先加大 `micro_batch_size`；
-- CUDA 上优先 `model.backend: fla`：0.1B / ctx512 / bsz4 实测 13.7–16.1K tok/s，
-  native 同配置约 3.9K；
-- `model.wkv_chunk: 96`（native 后端上限）可减少分块数；
-- `train.compile: true` 编译训练前向，fla 下约 +20%（0.1B：40.3K → 48.5K）；
-- `chunk_ctx` 太小会让分块串行开销占比变高，显存允许时适当增大；
+- 先看每步 token 数：0.1B 仍然受 elementwise / 小矩阵 / 启动开销影响，
+  建议把每步 token 加到 8K–20K（ctx512 × bsz32 左右）；
+- 确认 `precision: bf16-full`（基座 bf16、适配器 fp32），这是最大的单项提升；
+- CUDA 上优先 `model.backend: fla`：0.1B ctx512 最终 48.5K vs native 24.3K
+  （均开 compile）；
+- `train.compile: true`：fla 编译前向（+20%），native 只编译 WKV 单块（+18%）；
+- native 可把 `model.wkv_chunk` 提到 64/80（96 上限），减少分块数；
+- infctx 下把 `chunk_ctx` 提到 2048，并确认 `infctx_backward: true`；
 - 想要 Triton 内核需要 `rwkv-fla` + 新版 torch/triton，见上面的安装说明。
 
 **native + softplus 特别慢**

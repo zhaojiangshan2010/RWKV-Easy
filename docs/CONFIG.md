@@ -52,8 +52,9 @@ rwkv-easy train -c configs/lora.yaml --set train.lr=2e-4 --set data.val_ratio=0.
 
 > `backend: fla` 支持全部三种 decay（它接收的是已经变换好的 log-decay，
 > 内部走 `log_w` 参数）。官方权重用 `clampw` 即可，不需要改成 softplus。
-> fla 在 CUDA 上实测比 native 快约 3.5–4 倍（0.1B / ctx512 / bsz4：
-> 13.7–16.1K vs 3.9K tok/s），但需要 CUDA/ROCm + Triton ≥ 3.2，且建议用 bf16。
+> 0.1B / ctx512 最终实测：fla + compile 48.5K vs native + compile 24.3K tok/s，
+> 长上下文差距更大（infctx 41.7K vs 5.1K）；需要 CUDA/ROCm + Triton ≥ 3.2，
+> 且建议用 bf16 / bf16-full。
 
 ## `train` —— 训练超参
 
@@ -212,18 +213,20 @@ target_modules: [att.receptance, att.key, att.value, att.output]
 
 | 字段 | 方向 | 说明 |
 |---|---|---|
-| `model.backend` | 速度 ↑↑ | CUDA 上优先 `fla`：0.1B / ctx512 / bsz4 从 3.9K 涨到 13.7–16.1K tok/s |
-| `train.micro_batch_size` | 吞吐 ↑ / 显存 ↑ | 小模型优先加大；0.1B 从 bsz1→8 吞吐可涨 7 倍 |
+| `model.backend` | 速度 ↑↑ | CUDA 上优先 `fla`：0.1B ctx512/bsz32 48.5K vs native 24.3K（均 compile） |
+| `train.micro_batch_size` | 吞吐 ↑ / 显存 ↑ | 小模型优先加大；fla bsz4→32 从 17.4K 涨到 40.3K（eager） |
 | `train.grad_accum` | 显存 ↓ / 速度 ≈ | 总 batch = micro × accum × GPU 数；只影响更新频率 |
 | `model.wkv_chunk` | 速度 ↑ / 精度略降 | native 默认 64，96 是上限；fla 固定 64，此字段无效 |
 | `train.compile` | 速度 ↑ / 首次启动慢 | fla 编译前向 40.3K → 48.5K；native 编译 WKV 单块 20.6K → 24.3K |
 | `train.compile_mode` | 速度/显存 | `reduce-overhead` State 56.3K、9.2 GiB；`max-autotune` 略快但编译约 8 分钟 |
-| `train.grad_checkpoint` | 显存 ↓ / 速度 ↓ | infctx 下建议开；显存充足时可关（约快 1.7 倍，显存 ×3） |
+| `train.grad_checkpoint` | 显存 ↓ / 速度 ↓ | infctx + per-chunk backward 后通常可关；8K ctx 23.7K → 34.6K |
 | `train.precision` | 显存 / 速度 | GPU 用 `bf16-full`（基座 bf16、适配器 fp32）；CPU 必须 `fp32` |
 | `train.chunk_ctx` | 显存 ↓ / 速度 ↓ | infctx 的显存单位；2048 在 0.1B/0.4B 上效率最高 |
 | `train.infctx_backward` | 显存 ↓↓ | 每块立即反传，显存与 ctx_len 解耦；DDP/DS 自动回退 |
-| `train.grad_checkpoint` | 显存 ↓ / 速度 ↓ | infctx + per-chunk backward 后通常可关 |
 | `dist.mode: deepspeed` | 显存 ↓ | ZeRO 分片；单卡也能用，多卡节省优化器状态 |
+
+更完整的调优方法、显存模型和按模型规模的建议见
+[`PERFORMANCE.md`](PERFORMANCE.md)。
 
 ## 完整示例
 

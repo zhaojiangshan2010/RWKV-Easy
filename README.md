@@ -37,6 +37,7 @@
 - [命令行速查](#命令行速查)
 - [数据集格式](#数据集格式)
 - [显存与参数建议](#显存与参数建议)
+- [性能调优指南](docs/PERFORMANCE.md)
 - [常见问题](#常见问题)
 - [项目结构](#项目结构)
 - [进一步阅读](#进一步阅读)
@@ -45,7 +46,7 @@
 
 ## 为什么需要它
 
-参考实现 [RWKV-PEFT](../example/RWKV-PEFT) 很强大，但有三个会直接卡住新手的坑：
+参考实现 RWKV-PEFT 很强大，但有三个会直接卡住新手的坑：
 
 | 问题 | RWKV-PEFT | RWKV-EASY |
 |---|---|---|
@@ -54,14 +55,14 @@
 | ShareGPT 数据 | ❌ 只有 binidx / jsonl / 两列 SFT，没有对话解析与 assistant-only mask | ✅ 原生 ShareGPT，自动构造只对 assistant 计 loss 的掩码 |
 | 安装 | 需要 transformers / peft / lightning / rwkv / rwkv-fla / triton … | 只需要 `torch` + `pyyaml` |
 
-另外还有两个“新手友好”但很实用的点：
+另外还有几个“新手友好”但很实用的点：
 
 - **衰减公式自动校准**：不同版本的 RWKV-7 实现使用不同的 decay 参数化，用错不会报错、
   但模型输出会明显变差。RWKV-EASY 会用一段内置中英文本自动比较三种公式，选 loss 最低的那个。
 - **CUDA 上可选 Triton 加速**：`model.backend: fla` 直接调用 rwkv-fla 的融合内核，
-  0.1B 实测比纯 PyTorch 快约 1.8–14 倍（整段/长上下文），且支持官方权重的 `clampw`。
+  同配置约快 2–8 倍（长上下文差距更大），且支持官方权重的 `clampw`。
 - **infctx 真正省显存**：每个 chunk 立即 backward，显存只与 `chunk_ctx` 有关，
-  0.1B 在 24GB 卡上可以训 32K 上下文（4.7 GiB）。
+  0.1B 在 24GB 卡上可以训 32K 上下文（3.4 GiB）。
 - **CPU 可完整自检**：`rwkv-easy selftest` 不需要下载任何权重，几分钟内跑完
   训练 → infctx → 保存 → 合并 → 重新加载 的完整链路。
 
@@ -166,6 +167,7 @@ python -m rwkv_easy train -c configs/my-lora-run.yaml
 - 单卡：直接训练
 - 多卡：自动用 DDP 拉起多进程（`dist.mode: auto`）
 - 想用 DeepSpeed：`--set dist.mode=deepspeed`
+- CUDA 上想最快：用 `configs/lora_sharegpt_fla.yaml`（rwkv-fla + compile）
 - 想先确认能跑：`python -m rwkv_easy train -c configs/debug_cpu.yaml`
 
 训练过程中会打印：
@@ -206,7 +208,9 @@ python -m rwkv_easy train -c configs/my-lora-run.yaml --resume runs/xxx
   → 加载 RWKV-7（meta 设备 + mmap + assign，按精度定型）
   → decay 自动校准（三种公式各算一次 loss，选最低）
   → 注入 LoRA 或 time_state（冻结基座）
-  → 循环：前向（infctx 则分块传状态）→ CE + L2Wrap → 反传 → 裁剪 → step
+  → 可选 torch.compile（fla 编译前向 / native 编译 WKV 单块）
+  → 循环：前向到 ln_out → 只对可训练 token 过 head → CE + L2Wrap
+          （infctx 则分块、每块立即反传）→ 反传 → 裁剪 → step
   → 定期保存 adapter + 优化器；结束导出 merged.pth
 ```
 
@@ -275,7 +279,7 @@ rwkv-easy generate -m models/你的模型.pth -p "你好" --max-tokens 64 --temp
 rwkv-easy train -c configs/lora_sharegpt.yaml \
   --set model.path=models/你的模型.pth --set train.max_steps=20
 
-# 5) infctx 冒烟
+# 5) infctx 冒烟（没有 rwkv-fla 时加 --set model.backend=native）
 rwkv-easy train -c configs/lora_sharegpt_infctx.yaml \
   --set model.path=models/你的模型.pth --set train.max_steps=20
 ```
@@ -304,13 +308,14 @@ rwkv-easy train -c configs/lora_sharegpt_infctx.yaml \
 对应的模板：
 
 ```
-configs/lora_sharegpt.yaml
-configs/lora_sharegpt_fla.yaml        # CUDA + rwkv-fla，最快
+configs/lora_sharegpt.yaml            # 通用 LoRA（native）
+configs/lora_sharegpt_fla.yaml        # CUDA + rwkv-fla + compile，最快
 configs/state_sharegpt.yaml
-configs/lora_sharegpt_infctx.yaml
-configs/state_sharegpt_infctx.yaml
+configs/lora_sharegpt_infctx.yaml     # 长上下文（默认 fla）
+configs/state_sharegpt_infctx.yaml    # 长上下文 + State（默认 fla）
 configs/lora_2gpu_deepspeed.yaml
-configs/debug_cpu.yaml
+configs/debug_cpu.yaml                # 随机小模型，CPU 冒烟
+configs/self_identity_lora.yaml       # CPU 过拟合 demo
 ```
 
 ### LoRA 与 State 的区别
@@ -447,7 +452,8 @@ Assistant: 【苹果】【
 
 ## 显存与参数建议
 
-以下为 bf16 + 梯度检查点开启时的**粗略**估计（只训练 LoRA/State，基座不存梯度）：
+以下为 **bf16-full + 梯度检查点** 时的**粗略**估计（只训练 LoRA/State，基座不存梯度；
+0.1B 有完整实测，更大模型请按显存微调）：
 
 | 模型 | 训练方式 | ctx 2048 / bsz 2 | ctx 8192 + infctx / bsz 1 |
 |---|---|---|---|
@@ -477,18 +483,22 @@ GPU（24GB Ampere 级，0.1B，bf16-full）：
 | LoRA | fla（clampw） | ctx 512 / bsz 32 / eager | ≈40.3K tok/s | 12.2 GiB |
 | LoRA | native（clampw） | ctx 512 / bsz 24 / chunk 64 / compile | **≈24.3K tok/s** | 16.9 GiB |
 | LoRA | native（clampw） | ctx 512 / bsz 24 / chunk 64 / eager | ≈20.6K tok/s | 17.6 GiB |
-| LoRA | native（clampw） | ctx 512 / bsz 16 / chunk 96 | ≈19.0K tok/s | 15.0 GiB |
+| LoRA | native（clampw） | ctx 512 / bsz 16 / chunk 96 / eager | ≈19.0K tok/s | 15.0 GiB |
 | LoRA + infctx | **fla**（clampw） | ctx 8192 / chunk 2048 / bsz 2 / compile | **≈37.0K tok/s** | 3.4 GiB |
 | LoRA + infctx | **fla**（clampw） | ctx 8192 / chunk 2048 / bsz 10 / compile | **≈41.7K tok/s** | 15.2 GiB |
-| LoRA + infctx | **fla**（clampw） | ctx 32768 / chunk 2048 / bsz 2 | **≈33.6K tok/s** | 3.4 GiB |
+| LoRA + infctx | **fla**（clampw） | ctx 32768 / chunk 2048 / bsz 2 / eager | **≈33.6K tok/s** | 3.4 GiB |
 | LoRA + infctx | native（clampw） | ctx 8192 / chunk 2048 / bsz 2 / compile | ≈5.1K tok/s | 5.9 GiB |
 | State | **fla**（clampw） | ctx 512 / bsz 32 / reduce-overhead | **≈56.3K tok/s** | 9.2 GiB |
-| State + infctx | **fla**（clampw） | ctx 8192 / chunk 2048 / bsz 2 | **≈72.6K tok/s** | 2.7 GiB |
+| State + infctx | **fla**（clampw） | ctx 8192 / chunk 2048 / bsz 2 / eager | **≈72.6K tok/s** | 2.7 GiB |
 | DeepSpeed ZeRO-2 | **fla**（clampw） | sample ctx 64 / bsz 2 | 首次编译 ~42s，之后正常 | 1.5 GiB |
 
 **同配置对比才有意义**：不同 `ctx_len` / `chunk_ctx` / `micro_batch_size` 的绝对
 tok/s 不能直接比较。上面的 fla/native 行已经尽量固定其它变量；native + infctx
 明显慢，是因为它要在 fp32 下顺序处理 32 个小 chunk，长上下文应使用 fla。
+
+> 表里的 48.5K / 56.3K 是 **0.1B 的最优工作点**（ctx512、bsz32）。
+> `configs/` 模板默认面向 0.4B / 长上下文，batch 更小；0.1B 可以把
+> `ctx_len` 降到 512、`micro_batch_size` 加到 32（或按显存逐步试）。
 
 `bf16-full` 是这一轮最大的单项提升：基座权重直接是 bf16，省掉了 autocast
 每次 Linear 的 fp32→bf16 权重转换。0.1B / ctx512 / bsz16 从 23.8K 提到 34.8K
@@ -506,34 +516,36 @@ tok/s 不能直接比较。上面的 fla/native 行已经尽量固定其它变�
 > log-decay 在 -2～-7 之间，块内累计衰减很大，必须把块长压到 8 左右才不溢出。
 > 需要 softplus + CUDA 时请直接用 fla；native 在 clampw 下不受影响。
 
-0.1B 在 GPU 上仍然受算子启动/小矩阵效率影响，但 bf16-full + fla 已经把
-吞吐从 3.9K 推到 37K（约 41 TFLOPS，设备 bf16 峰值约 62–74 TFLOPS）。
-模型越大，计算占比越高，这组数字会继续接近峰值。
+0.1B 在 GPU 上仍然受 elementwise 和小矩阵效率影响，但 bf16-full + fla + compile
+已经把吞吐从 3.9K 推到 **48.5K**（约 **55.6 TFLOPS**；State 56.3K ≈ 64.5 TFLOPS），
+设备 bf16 峰值约 62–74 TFLOPS，已经用到 75–90%。模型越大，计算占比越高。
+完整调优方法见 [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md)。
 
 显存不够时，按顺序尝试：
 
 1. 降 `micro_batch_size`，同时把 `grad_accum` 调大（总 batch 不变）
-2. 确认 `grad_checkpoint: true`
-3. `chunk_ctx` 从 512 降到 256（infctx）
-4. `precision: bf16-full`（参数本身用 bf16）
+2. infctx 下先确认 `infctx_backward: true`，再把 `chunk_ctx` 从 2048 降到 1024/512
+3. `grad_checkpoint: true`
+4. `precision: bf16-full`（只有冻结基座用 bf16，LoRA/state 仍是 fp32）
 5. 多卡 + DDP / DeepSpeed
 
-### 性能调优（三个旋钮）
+### 性能调优（按收益排序）
 
-0.1B 这类小模型在 GPU 上是**算子启动开销受限**，不是算力受限。按收益排序：
+0.1B 这类小模型仍然受 elementwise / 小矩阵 / 启动开销影响；按收益排序：
 
 | 旋钮 | 建议 | 实测效果（0.1B，ctx512） |
 |---|---|---|
 | `train.precision` | GPU 用 `bf16-full` | bsz16：23.8K → 34.8K tok/s，显存 14.6 → 8.9 GiB |
 | `model.backend` + `train.compile` | CUDA 上 fla + compile | native eager 20.6K → fla eager 40.3K → fla + compile 48.5K |
-| `micro_batch_size` | 显存允许就加大 | fla 从 bsz4→32：17.4K → 37.0K（eager） |
+| `micro_batch_size` | 显存允许就加大 | fla 从 bsz4→32：17.4K → 40.3K（eager） |
 | `train.compile_mode` | 默认 `default` | native 单块编译 +18%（约 25s）；State reduce-overhead 56.3K；max-autotune +1.2K 但编译约 8 分钟 |
-| `model.wkv_chunk` | native 用 64/80（96 上限） | native bsz24：64→20.6K，80→20.2K |
+| `model.wkv_chunk` | native 用 64/80（96 上限） | native bsz24 eager：64→20.6K，80→20.2K |
 | `train.infctx_backward` | 保持 `true` | 8K ctx：12.4 → 3.4 GiB，可训 32K |
-| `train.grad_checkpoint` | infctx 下可关 | 8K ctx：23.7K → 32.5K tok/s |
+| `train.grad_checkpoint` | infctx 下可关 | 8K ctx：23.7K → 34.6K tok/s（bsz2） |
 
-`grad_checkpoint` 是内存与速度的交换：infctx 下开启约 700 tok/s、3.7GiB；
-关闭约 1.2K tok/s、11.4GiB。模型越大，上面的固定开销占比越低。
+`grad_checkpoint` 是内存与速度的交换：infctx + per-chunk backward 下，8K ctx /
+chunk2048 / bsz2 开 GC 约 23.7K tok/s、3.9 GiB；关掉约 34.6K、3.4 GiB。
+显存充足时优先关掉；7B 级模型再按显存打开。
 
 ---
 
@@ -607,7 +619,7 @@ RWKV-EASY/
 | 调超参 / 查字段含义 | [`docs/CONFIG.md`](docs/CONFIG.md) |
 | 搞清数据格式与 mask | [`docs/DATASET.md`](docs/DATASET.md) |
 | 解决报错 | [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md) |
-| 看性能数字与瓶颈 | [`docs/GPU_VERIFICATION.md`](docs/GPU_VERIFICATION.md)、[`docs/CPU_VERIFICATION.md`](docs/CPU_VERIFICATION.md) |
+| 看性能数字与瓶颈 | [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md)、[`docs/GPU_VERIFICATION.md`](docs/GPU_VERIFICATION.md)、[`docs/CPU_VERIFICATION.md`](docs/CPU_VERIFICATION.md) |
 | 改代码 / 加后端 / 加模型版本 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)、[`docs/EXTENDING.md`](docs/EXTENDING.md) |
 | 看版本与修复记录 | [`CHANGELOG.md`](CHANGELOG.md) |
 

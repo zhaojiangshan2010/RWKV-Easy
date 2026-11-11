@@ -34,6 +34,15 @@
   闭包只捕获 max_value/indices，修复引用环泄漏。
 - native 缓存下三角掩码，`solve_triangular` 用 `unitriangular=True`。
 
+### 文档
+
+- 新增 [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md)：按收益排序的调优旋钮、
+  显存模型、按模型规模的建议、benchmark 方法与常见误判。
+- README 重写「显存与参数建议 / 性能调优」章节，统一为 0.2.0 的实测数字。
+- `CONFIG.md` 增加 `compile_mode` / `infctx_backward` / bf16-full 说明；
+  `ARCHITECTURE.md` 增加「训练 loss 与前向编译」；`TROUBLESHOOTING.md`
+  更新 compile / infctx / GPU 慢的排查。
+
 ### 试过但没有保留
 
 - bf16 交叉熵 / bf16 GroupNorm：没有收益。

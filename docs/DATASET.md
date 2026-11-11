@@ -148,6 +148,10 @@ Assistant: 【苹果】【
 - 一条对话可能被窗口切开（正常现象）；
 - 文档边界处的 label 会被置为 `-100`，不会让模型学习“上一段结尾 → 下一段开头”。
 
+> infctx 的 `chunk_ctx` 只是前向/显存粒度，不改变数据长度。开启
+> `infctx_backward: true` 后每个 chunk 立即反传，显存只与 `chunk_ctx`
+> 有关；0.1B/0.4B 建议 2048（见 [`PERFORMANCE.md`](PERFORMANCE.md)）。
+
 ### `sample`
 
 一条对话一个样本，batch 内动态 padding：

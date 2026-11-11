@@ -7,6 +7,9 @@ CUDA 13.0、cuDNN 9.24、**triton 3.8.0**、DeepSpeed 0.19.8、
 
 模型：`rwkv7-g1d-0.1b-20260129-ctx8192.pth`（12 层 / 768 维 / 191.08M，bf16）。
 
+> 这页是**验证记录**（profile、实验、否决项）。面向使用的调参建议见
+> [`PERFORMANCE.md`](PERFORMANCE.md)。
+
 设备实测峰值（`torch.matmul`，30 次平均）：
 
 | 尺寸 | bf16 | fp32（无 TF32） | fp32（TF32） |
@@ -50,7 +53,7 @@ CUDA 13.0、cuDNN 9.24、**triton 3.8.0**、DeepSpeed 0.19.8、
 | LoRA | fla / clampw | bsz 48，compile | 45.5K tok/s | 17.6 GiB |
 | LoRA | **native** / clampw | bsz 24，wkv_chunk 64，compile 单块 | **24.3K tok/s** | 16.9 GiB |
 | LoRA | native / clampw | bsz 24，wkv_chunk 64，eager | 20.6K tok/s | 17.6 GiB |
-| LoRA | native / clampw | bsz 16，wkv_chunk 96 | 19.0K tok/s | 15.0 GiB |
+| LoRA | native / clampw | bsz 16，wkv_chunk 96，eager | 19.0K tok/s | 15.0 GiB |
 | State | **fla** / clampw | bsz 32，reduce-overhead | **56.3K tok/s** | 9.2 GiB |
 | State | fla / clampw | bsz 32，eager | 47.7K tok/s | 9.6 GiB |
 
@@ -62,9 +65,9 @@ CUDA 13.0、cuDNN 9.24、**triton 3.8.0**、DeepSpeed 0.19.8、
 | LoRA + infctx | ctx 8192 / chunk 2048 / bsz 2 / eager | 34.6K tok/s | 3.4 GiB |
 | LoRA + infctx | ctx 8192 / chunk 2048 / bsz 10 / compile | **41.7K tok/s** | 15.2 GiB |
 | LoRA + infctx | ctx 8192 / chunk 2048 / bsz 10 / eager | 40.5K tok/s | 15.2 GiB |
-| LoRA + infctx | ctx 32768 / chunk 2048 / bsz 2 | 33.6K tok/s | 3.4 GiB |
+| LoRA + infctx | ctx 32768 / chunk 2048 / bsz 2 / eager | 33.6K tok/s | 3.4 GiB |
 | LoRA + infctx | ctx 8192 / chunk 2048 / bsz 2，梯度检查点 | 23.7K tok/s | 3.9 GiB |
-| State + infctx | ctx 8192 / chunk 2048 / bsz 2 | **72.6K tok/s** | 2.7 GiB |
+| State + infctx | ctx 8192 / chunk 2048 / bsz 2 / eager | **72.6K tok/s** | 2.7 GiB |
 | LoRA + infctx（旧路径） | ctx 8192 / chunk 2048 / bsz 2 | 31.8K tok/s | 12.4 GiB |
 | LoRA + infctx（native） | ctx 8192 / chunk 2048 / bsz 2 / compile | 5.1K tok/s | 5.9 GiB |
 | LoRA + infctx（native） | ctx 8192 / chunk 2048 / bsz 2 / eager | 2.3K tok/s | 7.5 GiB |
@@ -74,8 +77,8 @@ CUDA 13.0、cuDNN 9.24、**triton 3.8.0**、DeepSpeed 0.19.8、
 | 场景 | 配置 | 结果 |
 |---|---|---|
 | `check-model` | native，bf16，3×256 token 校准 + 32 token 生成 | 22.8 秒 |
-| fp16 混合精度 | native，ctx512/bsz2 | ≈2.5K tok/s，3.4 GiB |
-| DeepSpeed ZeRO-2（单卡） | native，ctx512/bsz2，bf16 | ≈2.3K tok/s，3.4 GiB |
+| fp16 混合精度（旧配置） | native，ctx512/bsz2，bf16 参数 | ≈2.5K tok/s，3.4 GiB |
+| DeepSpeed ZeRO-2（单卡，旧配置） | native，ctx512/bsz2，bf16 | ≈2.3K tok/s，3.4 GiB |
 | DeepSpeed ZeRO-2（单卡） | fla，ctx512/bsz8，compile | 28.6K tok/s，3.7 GiB |
 | DeepSpeed ZeRO-2（单卡） | fla，sample ctx64/bsz2 | 首次编译 ~42s，之后正常，1.5 GiB |
 | 自我认知过拟合 | native，sample ctx64/bsz2，20 步 | 秒级，loss 5.25 → 0.001 |
