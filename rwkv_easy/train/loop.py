@@ -269,18 +269,17 @@ class Trainer:
     # 计算 loss
     # ------------------------------------------------------------------ #
 
-    def _cross_entropy(self, logits: torch.Tensor, labels: torch.Tensor) -> tuple[torch.Tensor, int]:
-        vocab = logits.size(-1)
+    def _cross_entropy(self, hidden: torch.Tensor, labels: torch.Tensor) -> tuple[torch.Tensor, int]:
+        """只对 `label != -100` 的 token 过 lm_head，省掉 prompt 的 logits。"""
         flat_labels = labels.reshape(-1)
-        count = int((flat_labels != IGNORE_INDEX).sum().item())
+        valid = flat_labels != IGNORE_INDEX
+        count = int(valid.sum().item())
         if count == 0:
-            return logits.sum() * 0.0, 0
-        loss = F.cross_entropy(
-            logits.reshape(-1, vocab),
-            flat_labels,
-            ignore_index=IGNORE_INDEX,
-            reduction="sum",
-        )
+            return hidden.sum() * 0.0, 0
+
+        flat_hidden = hidden.reshape(-1, hidden.size(-1))
+        logits = self.model.head(flat_hidden[valid])
+        loss = F.cross_entropy(logits, flat_labels[valid], reduction="sum")
         loss = loss / count
         if self.cfg.train.l2wrap > 0 and self.model.training and logits.requires_grad:
             # 与官方 L2Wrap 数学等价，但不再为 logits 新建一份全量梯度：
@@ -303,8 +302,10 @@ class Trainer:
         attention_mask = batch.get("attention_mask")
         if self.cfg.train.infctx:
             return self._infctx_loss(input_ids, labels, attention_mask)
-        logits, _ = self.model(input_ids, attention_mask=attention_mask, need_state=False)
-        loss, count = self._cross_entropy(logits, labels)
+        hidden, _ = self.model.forward_hidden(
+            input_ids, attention_mask=attention_mask, need_state=False
+        )
+        loss, count = self._cross_entropy(hidden, labels)
         return loss, count, False
 
     def _infctx_loss(
@@ -347,8 +348,8 @@ class Trainer:
 
             use_checkpoint = cfg.grad_checkpoint and self.model.training
             if use_checkpoint:
-                logits, shift_att, shift_ffn, wkv = checkpoint_fn(
-                    self.model.forward_chunk,
+                hidden, shift_att, shift_ffn, wkv = checkpoint_fn(
+                    self.model.forward_chunk_hidden,
                     chunk_ids,
                     state.shift_att,
                     state.shift_ffn,
@@ -357,11 +358,11 @@ class Trainer:
                     use_reentrant=False,
                 )
             else:
-                logits, shift_att, shift_ffn, wkv = self.model.forward_chunk(
+                hidden, shift_att, shift_ffn, wkv = self.model.forward_chunk_hidden(
                     chunk_ids, state.shift_att, state.shift_ffn, state.wkv, chunk_mask
                 )
 
-            chunk_loss, chunk_tokens = self._cross_entropy(logits, chunk_labels)
+            chunk_loss, chunk_tokens = self._cross_entropy(hidden, chunk_labels)
             if per_chunk_backward:
                 if chunk_tokens > 0:
                     weight = chunk_tokens / total_tokens

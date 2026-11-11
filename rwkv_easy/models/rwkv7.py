@@ -518,6 +518,23 @@ class RWKV7(nn.Module):
         state: ModelState | None = None,
         need_state: bool = False,
     ) -> tuple[torch.Tensor, ModelState | None]:
+        hidden, new_state = self.forward_hidden(
+            input_ids, attention_mask=attention_mask, state=state, need_state=need_state
+        )
+        return self.head(hidden), new_state
+
+    def forward_hidden(
+        self,
+        input_ids: torch.Tensor,
+        attention_mask: torch.Tensor | None = None,
+        state: ModelState | None = None,
+        need_state: bool = False,
+    ) -> tuple[torch.Tensor, ModelState | None]:
+        """返回 ``ln_out`` 之后的隐藏态，不经过 lm_head。
+
+        训练时可以把 head 只作用在 `label != -100` 的 token 上，省掉大量
+        prompt token 的 65536 维 logits；数学上与整段算 logits 再 ignore 完全等价。
+        """
         if attention_mask is not None:
             if attention_mask.dim() != 2:
                 raise ValueError("attention_mask 需要是 (B,T)")
@@ -558,12 +575,11 @@ class RWKV7(nn.Module):
                 wkv_states.append(new_state.wkv)
 
         x = self.ln_out(x)
-        logits = self.head(x)
 
         new_model_state = None
         if need_state:
             new_model_state = ModelState.from_layers(att_shifts, ffn_shifts, wkv_states)
-        return logits, new_model_state
+        return x, new_model_state
 
     # ------------------------------------------------------------------ #
     # infctx：把状态拆成张量，便于 torch.utils.checkpoint
@@ -577,16 +593,30 @@ class RWKV7(nn.Module):
         wkv: torch.Tensor | None = None,
         attention_mask: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        """infctx 单块前向。状态以张量形式传入/传出，方便 ``torch.utils.checkpoint``。"""
+        """infctx 单块前向（带 lm_head，兼容原有调用）。"""
+        hidden, new_shift_att, new_shift_ffn, new_wkv = self.forward_chunk_hidden(
+            input_ids, shift_att, shift_ffn, wkv, attention_mask
+        )
+        return self.head(hidden), new_shift_att, new_shift_ffn, new_wkv
+
+    def forward_chunk_hidden(
+        self,
+        input_ids: torch.Tensor,
+        shift_att: torch.Tensor | None = None,
+        shift_ffn: torch.Tensor | None = None,
+        wkv: torch.Tensor | None = None,
+        attention_mask: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """infctx 单块前向，状态以张量形式传入/传出，不经过 lm_head。"""
         state = None
         if shift_att is not None:
             assert shift_ffn is not None and wkv is not None
             state = ModelState(shift_att=shift_att, shift_ffn=shift_ffn, wkv=wkv)
-        logits, new_state = self.forward(
+        hidden, new_state = self.forward_hidden(
             input_ids, attention_mask=attention_mask, state=state, need_state=True
         )
         assert new_state is not None
-        return logits, new_state.shift_att, new_state.shift_ffn, new_state.wkv
+        return hidden, new_state.shift_att, new_state.shift_ffn, new_state.wkv
 
     def forward_full(
         self,
