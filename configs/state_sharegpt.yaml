@@ -1,0 +1,62 @@
+# ============================================================
+# RWKV-7 State Tuning（只训练每层的初始循环状态）
+#
+#   rwkv-easy train -c configs/state_sharegpt.yaml
+#
+# 参数量极小（通常 < 0.1%），适合小数据快速适配。
+# 学习率通常比 LoRA 大 10-100 倍。
+# ============================================================
+
+run:
+  name: rwkv7-state
+  output_dir: runs
+  seed: 42
+
+model:
+  path: models/rwkv7-g1d-0.4b.pth
+  decay: auto
+  backend: native
+  wkv_chunk: 64
+
+train:
+  method: state
+  infctx: false
+  ctx_len: 2048
+  chunk_ctx: 512
+  micro_batch_size: 2
+  grad_accum: 8
+  epochs: 1
+  lr: 5.0e-3                            # state 通常用更大的学习率
+  min_lr: 5.0e-4
+  warmup_steps: 20
+  lr_schedule: cosine
+  weight_decay: 0.0                     # time_state 本身不参与 weight decay
+  grad_clip: 1.0
+  precision: bf16
+  grad_checkpoint: true
+  log_every: 10
+  save_every_steps: 500
+  save_every_epochs: 1
+  keep_last: 2
+  merge_at_end: true
+
+state:
+  init_std: 0.0                         # 0 = 零初始化（官方做法）
+
+data:
+  path: data/sharegpt.json
+  mode: packed
+  template: rwkv_world
+  train_on: assistant
+  append_eos: end
+  val_ratio: 0.0
+  num_workers: 2
+  num_proc: 4
+
+dist:
+  mode: auto
+  num_gpus: auto
+
+log:
+  jsonl: true
+  wandb: false

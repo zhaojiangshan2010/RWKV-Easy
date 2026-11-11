@@ -1,0 +1,32 @@
+RWKV-EASY
+Copyright (c) 2026 RWKV-EASY contributors
+
+This product includes software and data derived from the following projects:
+
+1. RWKV-LM
+   https://github.com/BlinkDL/RWKV-LM
+   Copyright (c) BlinkDL
+   Licensed under the Apache License, Version 2.0.
+
+   Used for:
+   - the RWKV-7 (x070) model architecture and parameter layout
+     (rwkv_easy/models/rwkv7.py)
+   - the RWKV World vocabulary file
+     (rwkv_easy/assets/rwkv_vocab_v20230424.txt, originally from
+      json2binidx_tool/rwkv_vocab_v20230424.txt)
+   - reference semantics for the WKV recurrence
+     (rwkv_easy/backends/native.py, rwkv_easy/backends/reference.py)
+
+2. RWKV-PEFT
+   https://github.com/JL-er/RWKV-PEFT
+   Licensed under the Apache License, Version 2.0.
+
+   Used as a structural reference for:
+   - state tuning / infinite-context training design
+   - checkpoint field naming conventions
+
+   No source file is copied verbatim except where explicitly noted in the
+   file header. The LoRA implementation, data pipeline and WKV backend in this
+   project are independent implementations.
+
+The full Apache License, Version 2.0 text is provided in LICENSE.

@@ -1,0 +1,60 @@
+# ============================================================
+# RWKV-7 State Tuning + infinite context
+#
+#   rwkv-easy train -c configs/state_sharegpt_infctx.yaml
+#
+# 组合方式：每个样本的第一块用学习到的 time_state 作为初始状态，
+# 之后由真实循环状态接管。这是参考实现 RWKV-PEFT 无法直接做到的组合。
+# ============================================================
+
+run:
+  name: rwkv7-state-infctx
+  output_dir: runs
+  seed: 42
+
+model:
+  path: models/rwkv7-g1d-0.4b.pth
+  decay: auto
+  backend: native
+  wkv_chunk: 64
+
+train:
+  method: state
+  infctx: true
+  ctx_len: 8192
+  chunk_ctx: 512
+  micro_batch_size: 1
+  grad_accum: 16
+  epochs: 1
+  lr: 5.0e-3
+  min_lr: 5.0e-4
+  warmup_steps: 20
+  lr_schedule: cosine
+  precision: bf16
+  grad_checkpoint: true
+  infctx_detach: true
+  log_every: 10
+  save_every_steps: 500
+  save_every_epochs: 1
+  keep_last: 2
+  merge_at_end: true
+
+state:
+  init_std: 0.0
+
+data:
+  path: data/sharegpt.json
+  mode: packed
+  template: rwkv_world
+  train_on: assistant
+  append_eos: end
+  num_workers: 2
+  num_proc: 4
+
+dist:
+  mode: auto
+  num_gpus: auto
+
+log:
+  jsonl: true
+  wandb: false

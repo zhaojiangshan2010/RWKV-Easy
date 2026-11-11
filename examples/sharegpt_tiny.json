@@ -1,0 +1,65 @@
+[
+  {
+    "conversations": [
+      {"from": "human", "value": "你好，请用一句话介绍 RWKV。"},
+      {"from": "gpt", "value": "RWKV 是一种把 Transformer 的并行训练能力和 RNN 的线性推理成本结合起来的语言模型架构。"}
+    ]
+  },
+  {
+    "conversations": [
+      {"from": "system", "value": "你是一个简洁的助手。"},
+      {"from": "human", "value": "什么是 LoRA？"},
+      {"from": "gpt", "value": "LoRA 是一种参数高效微调方法：冻结原模型，只训练插入到线性层里的低秩矩阵。"},
+      {"from": "human", "value": "它有什么好处？"},
+      {"from": "gpt", "value": "显存占用小、训练快、适配器文件体积小，而且可以随时合并回原模型。"}
+    ]
+  },
+  {
+    "messages": [
+      {"role": "user", "content": "帮我写一个 Python 函数，计算列表平均值。"},
+      {"role": "assistant", "content": "def mean(values):\n    return sum(values) / len(values) if values else 0.0"}
+    ]
+  },
+  {
+    "conversations": [
+      {"from": "human", "value": "state tuning 是什么？"},
+      {"from": "gpt", "value": "State Tuning 只训练每一层循环状态的初始值，参数量极少，适合在很小的数据上快速适配。"}
+    ]
+  },
+  {
+    "conversations": [
+      {"from": "human", "value": "infctx 训练解决了什么问题？"},
+      {"from": "gpt", "value": "它把长序列切成多块，块之间传递循环状态，从而用有限的显存训练超长上下文。"}
+    ]
+  },
+  {
+    "conversations": [
+      {"from": "human", "value": "1 到 10 的和是多少？"},
+      {"from": "gpt", "value": "1 到 10 的和是 55。"}
+    ]
+  },
+  {
+    "conversations": [
+      {"from": "human", "value": "解释一下梯度累积。"},
+      {"from": "gpt", "value": "梯度累积是把多个小批次的梯度加起来再更新一次参数，用更小的显存模拟更大的 batch。"}
+    ]
+  },
+  {
+    "conversations": [
+      {"from": "human", "value": "bf16 和 fp16 有什么区别？"},
+      {"from": "gpt", "value": "bf16 的指数位和 fp32 一样多，动态范围更大，训练时不容易溢出；fp16 的尾数更精确但范围更小。"}
+    ]
+  },
+  {
+    "conversations": [
+      {"from": "human", "value": "用中文写一句鼓励的话。"},
+      {"from": "gpt", "value": "把今天能做的事做好，明天自然会更清楚。"}
+    ]
+  },
+  {
+    "conversations": [
+      {"from": "human", "value": "DeepSpeed 是必须的吗？"},
+      {"from": "gpt", "value": "不是。单卡可以直接训练，多卡也可以使用 PyTorch 自带的 DDP；DeepSpeed 主要用于 ZeRO 分片和更大的模型。"}
+    ]
+  }
+]

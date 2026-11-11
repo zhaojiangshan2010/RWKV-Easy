@@ -1,0 +1,67 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rwkv-easy"
+version = "0.1.0"
+description = "RWKV-EASY: 面向新手的 RWKV-7 LoRA / State Tuning 训练器（支持 infctx 与 ShareGPT）"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+authors = [{ name = "RWKV-EASY contributors" }]
+keywords = ["rwkv", "lora", "state-tuning", "fine-tuning", "infctx", "sharegpt"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "torch>=2.1",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+# 多卡加速（可选）：不安装也能用 DDP / 单卡训练
+deepspeed = ["deepspeed>=0.14"]
+# CUDA / ROCm 上的 Triton 加速后端（可选）
+fla = ["rwkv-fla"]
+# 额外权重格式
+safetensors = ["safetensors>=0.4"]
+wandb = ["wandb>=0.16"]
+dev = ["pytest>=7.0", "ruff>=0.5"]
+
+[project.scripts]
+rwkv-easy = "rwkv_easy.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["rwkv_easy*"]
+
+[tool.setuptools.package-data]
+rwkv_easy = ["assets/*"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py310"
+src = ["."]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "C4", "RUF"]
+ignore = [
+    "RUF001", "RUF002", "RUF003",  # 中文注释里的全角标点
+    "B008",                        # 参数默认值里的函数调用（dataclass field 需要）
+    "RUF059",                      # 解包后未使用的变量
+    "E501",                        # 由 line-length 控制
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+filterwarnings = [
+    "ignore::DeprecationWarning",
+    "ignore::UserWarning",
+]

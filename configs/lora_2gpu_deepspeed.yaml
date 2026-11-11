@@ -1,0 +1,65 @@
+# ============================================================
+# 双卡 + DeepSpeed ZeRO-2
+#
+#   pip install deepspeed
+#   rwkv-easy train -c configs/lora_2gpu_deepspeed.yaml
+#
+# 不装 DeepSpeed 也能多卡训练：把 dist.mode 改成 ddp 即可。
+# LoRA / State 只训练极少量参数，ZeRO-2 已经足够；ZeRO-3 性价比不高。
+# ============================================================
+
+run:
+  name: rwkv7-lora-2gpu
+  output_dir: runs
+  seed: 42
+
+model:
+  path: models/rwkv7-g1d-0.4b.pth
+  decay: auto
+  backend: native
+  wkv_chunk: 64
+
+train:
+  method: lora
+  infctx: false
+  ctx_len: 4096
+  chunk_ctx: 512
+  micro_batch_size: 2
+  grad_accum: 4
+  epochs: 1
+  lr: 1.0e-4
+  min_lr: 1.0e-5
+  warmup_steps: 20
+  lr_schedule: cosine
+  precision: bf16
+  grad_checkpoint: true
+  log_every: 10
+  save_every_steps: 500
+  save_every_epochs: 1
+  merge_at_end: true
+
+lora:
+  rank: 16
+  alpha: 32
+  dropout: 0.0
+
+data:
+  path: data/sharegpt.json
+  mode: packed
+  template: rwkv_world
+  train_on: assistant
+  append_eos: end
+  num_workers: 2
+  num_proc: 4
+
+dist:
+  mode: deepspeed
+  num_gpus: 2
+  deepspeed:
+    zero_stage: 2
+    offload_optimizer: false
+    offload_param: false
+
+log:
+  jsonl: true
+  wandb: false

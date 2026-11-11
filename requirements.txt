@@ -1,0 +1,11 @@
+# RWKV-EASY 基础依赖（只需要这两个）
+torch>=2.1
+pyyaml>=6.0
+
+# ---- 可选依赖 ----
+# 多卡 ZeRO 加速（不装也能用 DDP）：
+#   pip install deepspeed
+# CUDA / ROCm 上的 Triton WKV 加速后端：
+#   pip install rwkv-fla
+# safetensors 权重格式：
+#   pip install safetensors

@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+
+# 虚拟环境
+.venv/
+venv/
+
+# 编辑器
+.idea/
+.vscode/
+
+# 运行产物（只忽略仓库根目录下的，避免误伤 rwkv_easy/models 等源码目录）
+/runs/
+/models/
+/data/
+.cache/
+.rwkv_easy_cache/
+
+# 模型权重与缓存
+*.pth
+*.pt
+*.safetensors
+*.npz
+*.npy

@@ -1,0 +1,59 @@
+# ============================================================
+# CPU 冒烟配置：不需要任何真实权重，2 分钟内跑完。
+#
+#   rwkv-easy train -c configs/debug_cpu.yaml
+#
+# 它随机初始化一个 2 层小模型，在 examples/sharegpt_tiny.json 上
+# 训练几步，用来确认安装、数据、保存、合并整条链路是否正常。
+# ============================================================
+
+run:
+  name: debug-cpu
+  output_dir: runs
+  seed: 42
+
+model:
+  random_init: true
+  n_layer: 2
+  n_embd: 64
+  vocab_size: 65536
+  head_size: 16
+  decay: clampw
+  backend: native
+  wkv_chunk: 32
+
+train:
+  method: lora
+  infctx: true
+  ctx_len: 64
+  chunk_ctx: 32
+  micro_batch_size: 2
+  grad_accum: 1
+  epochs: 100
+  max_steps: 20
+  lr: 2.0e-3
+  min_lr: 1.0e-4
+  warmup_steps: 2
+  precision: fp32
+  grad_checkpoint: true
+  log_every: 2
+  save_every_epochs: 0
+  merge_at_end: true
+
+lora:
+  rank: 8
+  alpha: 16
+  dropout: 0.0
+
+data:
+  path: examples/sharegpt_tiny.json
+  mode: packed
+  cache: false
+  num_workers: 0
+  num_proc: 0
+
+dist:
+  mode: single
+
+log:
+  jsonl: true

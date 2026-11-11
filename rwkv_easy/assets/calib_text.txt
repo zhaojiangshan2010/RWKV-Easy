@@ -1,0 +1,11 @@
+清晨的雾还没有散去，山谷里的溪水沿着石头缓慢地流。远处的村庄升起炊烟，一只灰白色的鸟落在屋檐上，抖了抖翅膀，又飞向更远的树林。老人把木门推开，走到院子里，看了看天色，说今天大概会下雨。孩子们已经在路上跑了，他们要去河边看新来的小船。
+
+The river was quiet that morning. Along the bank, tall grass bent in the wind, and small fish moved between the stones. A boat came slowly around the bend, its owner holding a long pole and watching the water. Nobody spoke for a while. Then the rain began, softly at first, touching the roof and the leaves and the surface of the river.
+
+在计算机程序里，数据结构和算法往往决定了运行效率。一个简单的数组可以在常数时间内访问任意元素，而链表更适合频繁的插入和删除。选择哪一种，取决于具体的任务。经验丰富的工程师会先测量，再优化，而不是凭直觉猜测瓶颈的位置。
+
+Machine learning models learn patterns from data. During training, the parameters are adjusted so that the prediction error becomes smaller. A large model can memorize many details, but it may also fit noise. Regularization, early stopping, and validation sets are common ways to keep the model honest.
+
+雨停之后，天空变得很亮。屋檐上还挂着水珠，空气里有泥土和青草的气味。老人坐在门口，慢慢喝着一杯热茶。他说，很多年前这里也有一场很大的雨，那时候还没有这座桥。孩子们跑回来，鞋子上全是泥，笑着讲他们在河边看到的东西。
+
+A good tool should be easy to start with and honest about its limits. It should do the common case well, explain its errors clearly, and leave room for people to change the parts they care about. That is true for a text editor, a compiler, and a training script alike.
