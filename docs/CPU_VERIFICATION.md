@@ -49,7 +49,7 @@ pip install -e .
 | 11 | 断点续训 | `tests/test_train_smoke.py::test_resume` | step 从 3 继续到 6 | 通过 |
 | 12 | 合并后重载 | `selftest` / `test_merge` | 无 `lora_` key，可正常加载 | 通过 |
 
-全套 108 个测试，CPU 上 103 passed + 5 skipped（fla 组需要 CUDA），
+全套 110 个测试，CPU 上 105 passed + 5 skipped（fla 组需要 CUDA），
 约 3–6 分钟（bf16-full 在 CPU 上较慢）。
 
 ---

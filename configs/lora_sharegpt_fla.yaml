@@ -41,6 +41,8 @@ train:
   grad_clip: 1.0
   precision: bf16-full                 # 基座 bf16，LoRA 参数仍是 fp32
   grad_checkpoint: true                # 0.1B/显存充足时可关
+  compile: true                        # 编译训练前向；首次启动几十秒，+20%
+  compile_mode: default                # 省显存可试 reduce-overhead
   log_every: 10
   save_every_steps: 500
   save_every_epochs: 1

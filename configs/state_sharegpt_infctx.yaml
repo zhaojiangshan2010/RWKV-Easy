@@ -15,7 +15,7 @@ run:
 model:
   path: models/rwkv7-g1d-0.4b.pth
   decay: auto
-  backend: native
+  backend: fla                         # 推荐 CUDA + rwkv-fla；没有就改 native
   wkv_chunk: 64
 
 train:
@@ -34,6 +34,8 @@ train:
   grad_checkpoint: false                # 每块即时反传后通常不需要
   infctx_detach: true
   infctx_backward: true                 # 每块立即 backward，显存 ∝ chunk_ctx
+  compile: true
+  compile_mode: default
   log_every: 10
   save_every_steps: 500
   save_every_epochs: 1

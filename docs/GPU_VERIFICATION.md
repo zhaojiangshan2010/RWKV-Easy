@@ -19,19 +19,20 @@ CUDA 13.0、cuDNN 9.24、**triton 3.8.0**、DeepSpeed 0.19.8、
 
 ## 1. 结论
 
-- **fla 整段 LoRA：37.0K tok/s（ctx512/bsz32，15.4 GiB）**；State：43.0K tok/s
-  （12.8 GiB）。约 41–49 TFLOPS，为设备 bf16 峰值的 60–75%。
-- **native 整段 LoRA：20.1–20.3K tok/s**（ctx512/bsz24–26）。比最初的 3.9K
-  提升 5 倍，主要来自 `bf16-full` + 大 batch；与 fla 的差距约 1.8 倍。
+- **fla 整段 LoRA：48.5K tok/s（ctx512/bsz32，compile，11.9 GiB）**；
+  State：56.3K tok/s（reduce-overhead，9.2 GiB）。约 56–65 TFLOPS，
+  为设备 bf16 峰值的 75–90%。
+- **native 整段 LoRA：20.6K tok/s**（ctx512/bsz24）。比最初的 3.9K 提升 5 倍，
+  主要来自 `bf16-full` + 大 batch + 选择性 head；与 fla 的差距约 2.3 倍。
 - **infctx 真正做到显存 ∝ chunk_ctx**：每个 chunk 立即 backward，
-  8K ctx 从 12.4 GiB 降到 **4.7 GiB**；0.1B 在 24GB 卡上可以训
-  **32K 上下文（4.7 GiB，32.1K tok/s）**。
-- infctx 大 batch 下接近整段训练：ctx8192 / chunk2048 / bsz10 达到
-  **37.0K tok/s（21.7 GiB）**；chunk4096 / bsz4 为 34.9K。
-- State + infctx 由于只有第一块需要反传，达到 **66.5K tok/s（4.0 GiB）**。
+  8K ctx 从 12.4 GiB 降到 **3.4 GiB**；0.1B 在 24GB 卡上可以训
+  **32K 上下文（3.4 GiB，33.6K tok/s）**。
+- infctx 大 batch 下接近整段训练：ctx8192 / chunk2048 / bsz10 / compile 达到
+  **41.7K tok/s（15.2 GiB）**。
+- State + infctx 由于只有第一块需要反传，达到 **72.6K tok/s（2.7 GiB）**。
 - native + softplus 在真实权重上仍只有约 130 tok/s：log-decay 在 -2～-7，
   块长会被压到 8 左右。CUDA + softplus 请直接用 fla。
-- 全量测试 **108 个**（GPU 上全跑，CPU 上 5 个 fla 测试跳过）。
+- 全量测试 **110 个**（GPU 上全跑，CPU 上 5 个 fla 测试跳过）。
 
 ---
 
@@ -43,27 +44,25 @@ CUDA 13.0、cuDNN 9.24、**triton 3.8.0**、DeepSpeed 0.19.8、
 
 | 场景 | 后端 | 配置 | 速度 | 峰值显存 |
 |---|---|---|---|---|
-| LoRA | **fla** / clampw | bsz 32 | **37.0K tok/s** | 15.4 GiB |
-| LoRA | fla / clampw | bsz 40 | 36.3K tok/s | 19.1 GiB |
-| LoRA | native / clampw | bsz 24，wkv_chunk 64 | 20.1K tok/s | 20.0 GiB |
-| LoRA | native / clampw | bsz 26，wkv_chunk 64 | 20.3K tok/s | 21.9 GiB |
+| LoRA | **fla** / clampw | bsz 32，compile | **48.5K tok/s** | 11.9 GiB |
+| LoRA | fla / clampw | bsz 32，eager | 40.3K tok/s | 12.2 GiB |
+| LoRA | fla / clampw | bsz 48，compile | 45.5K tok/s | 17.6 GiB |
+| LoRA | native / clampw | bsz 24，wkv_chunk 64 | 20.6K tok/s | 17.6 GiB |
 | LoRA | native / clampw | bsz 16，wkv_chunk 96 | 19.0K tok/s | 15.0 GiB |
-| State | **fla** / clampw | bsz 32 | **43.0K tok/s** | 12.8 GiB |
-| State | fla / clampw | bsz 40 | 43.4K tok/s | 15.9 GiB |
+| State | **fla** / clampw | bsz 32，reduce-overhead | **56.3K tok/s** | 9.2 GiB |
+| State | fla / clampw | bsz 32，eager | 47.7K tok/s | 9.6 GiB |
 
 ### 2.2 infctx（bf16-full，fla，per-chunk backward，无梯度检查点）
 
 | 场景 | 配置 | 速度 | 峰值显存 |
 |---|---|---|---|
-| LoRA + infctx | ctx 8192 / chunk 2048 / bsz 2 | 32.5K tok/s | 4.7 GiB |
-| LoRA + infctx | ctx 8192 / chunk 2048 / bsz 4 | 33.7K tok/s | 8.9 GiB |
-| LoRA + infctx | ctx 8192 / chunk 2048 / bsz 8 | 35.2K tok/s | 17.5 GiB |
-| LoRA + infctx | ctx 8192 / chunk 2048 / bsz 10 | **37.0K tok/s** | 21.7 GiB |
-| LoRA + infctx | ctx 8192 / chunk 4096 / bsz 2 | 34.4K tok/s | 8.9 GiB |
-| LoRA + infctx | ctx 16384 / chunk 2048 / bsz 2 | 27.9K tok/s | 4.7 GiB |
-| LoRA + infctx | ctx 32768 / chunk 2048 / bsz 2 | 32.1K tok/s | 4.7 GiB |
+| LoRA + infctx | ctx 8192 / chunk 2048 / bsz 2 / compile | 37.0K tok/s | 3.4 GiB |
+| LoRA + infctx | ctx 8192 / chunk 2048 / bsz 2 / eager | 34.6K tok/s | 3.4 GiB |
+| LoRA + infctx | ctx 8192 / chunk 2048 / bsz 10 / compile | **41.7K tok/s** | 15.2 GiB |
+| LoRA + infctx | ctx 8192 / chunk 2048 / bsz 10 / eager | 40.5K tok/s | 15.2 GiB |
+| LoRA + infctx | ctx 32768 / chunk 2048 / bsz 2 | 33.6K tok/s | 3.4 GiB |
 | LoRA + infctx | ctx 8192 / chunk 2048 / bsz 2，梯度检查点 | 23.7K tok/s | 3.9 GiB |
-| State + infctx | ctx 8192 / chunk 2048 / bsz 2 | **66.5K tok/s** | 4.0 GiB |
+| State + infctx | ctx 8192 / chunk 2048 / bsz 2 | **72.6K tok/s** | 2.7 GiB |
 | LoRA + infctx（旧路径） | ctx 8192 / chunk 2048 / bsz 2 | 31.8K tok/s | 12.4 GiB |
 | LoRA + infctx（native） | ctx 8192 / chunk 2048 / bsz 2 | 2.3K tok/s | 7.5 GiB |
 
@@ -74,9 +73,10 @@ CUDA 13.0、cuDNN 9.24、**triton 3.8.0**、DeepSpeed 0.19.8、
 | `check-model` | native，bf16，3×256 token 校准 + 32 token 生成 | 22.8 秒 |
 | fp16 混合精度 | native，ctx512/bsz2 | ≈2.5K tok/s，3.4 GiB |
 | DeepSpeed ZeRO-2（单卡） | native，ctx512/bsz2，bf16 | ≈2.3K tok/s，3.4 GiB |
+| DeepSpeed ZeRO-2（单卡） | fla，ctx512/bsz8，compile | 28.6K tok/s，3.7 GiB |
 | DeepSpeed ZeRO-2（单卡） | fla，sample ctx64/bsz2 | 首次编译 ~42s，之后正常，1.5 GiB |
 | 自我认知过拟合 | native，sample ctx64/bsz2，20 步 | 秒级，loss 5.25 → 0.001 |
-| 全量测试（CPU + GPU） | 108 个测试 | 约 80–85 秒 |
+| 全量测试（CPU + GPU） | 110 个测试 | 约 80–85 秒 |
 
 > **只看同配置对比**：不同 `ctx_len` / `chunk_ctx` / `micro_batch_size` 的绝对
 > tok/s 不可直接比较。早期表格里 State 的 fla 行用了 `sample ctx64/bsz2`
@@ -107,34 +107,38 @@ fla WKV 内核       ~9%
 | 改动 | 效果（0.1B，ctx512） |
 |---|---|
 | `precision: bf16-full`（基座 bf16，适配器 fp32） | bsz16：23.8K → 34.8K tok/s；显存 14.6 → 8.9 GiB |
-| fla 后端 + 大 batch | bsz4→32：17.4K → 37.0K tok/s |
-| infctx 每块即时 backward | 8K ctx：12.4 → 4.7 GiB，可训 32K |
-| infctx 关闭梯度检查点 | 8K ctx：23.7K → 32.5K tok/s |
+| fla 后端 + 大 batch | bsz4→32：17.4K → 40.3K tok/s（eager） |
+| 只对可训练 token 过 lm_head | 40.3K 前后再 +9%，logits 显存明显下降 |
+| `train.compile` 编译 `forward_hidden` | 40.3K → **48.5K tok/s** |
+| `compile_mode: reduce-overhead`（State） | 47.7K → **56.3K tok/s**，9.2 GiB |
+| infctx 每块即时 backward | 8K ctx：12.4 → 3.4 GiB，可训 32K |
+| infctx 关闭梯度检查点 | 8K ctx：23.7K → 34.6K tok/s |
 | L2Wrap 改成在 CE 已有梯度上原地 scatter_add | +2.5%，每步少 2 GiB 全量梯度 |
 | native 缓存三角掩码 + `unitriangular=True` | chunk96：18.65K → 18.98K tok/s |
-| native 大 batch（bsz24–26） | 约 20.1–20.3K tok/s |
+| native 大 batch（bsz24） | 约 20.6K tok/s |
 
 ### 3.3 试过但没有保留
 
-- `torch.compile`：整段训练没有稳定收益（GPU-bound；fla 本身已是融合内核）。
 - bf16 交叉熵 / bf16 GroupNorm：没有收益，GroupNorm 反而略慢。
 - native 合并 4 个块内 matmul + 保持 4D 布局：算子级略快，但中间量更占显存，
   大 batch 下 OOM，真实训练反而不如旧内核，已回退。
 - TF32：native 实测 18.65K vs 18.73K，差异在噪声内，没有启用。
 - native chunk 128：bsz24 直接 OOM，没有收益。
-- L2Wrap 直接关闭：能到 37.4K，但会丢掉稳定性项；最终保留 L2Wrap，
-  用原地梯度实现拿回大部分收益。
+- native + `torch.compile`：首次编译超过 9 分钟仍未完成（WKV 里大量小算子
+  和三角求解），不适合作为默认路径。
+- L2Wrap 直接关闭：能到 37.4K（当时未 compile），但会丢掉稳定性项；
+  最终保留 L2Wrap，用原地梯度实现拿回大部分收益。
 
 ### 3.4 当前天花板
 
-fla 整段 37K tok/s ≈ 41 TFLOPS，State 43K ≈ 49 TFLOPS。设备 bf16 峰值
-62–74 TFLOPS，剩余差距主要来自：
+fla + compile 整段 48.5K tok/s ≈ 55.6 TFLOPS，State 56.3K ≈ 64.5 TFLOPS。
+设备 bf16 峰值 62–74 TFLOPS，剩余差距主要来自：
 
-- RWKV 结构本身大量 elementwise（sigmoid/tanh/门控），无法全部融进 WKV 内核；
-- lm_head + cross-entropy 的 logits 张量（bsz32×512×65536）很大；
+- RWKV 结构本身大量 elementwise（sigmoid/tanh/门控），compile 已融合一部分；
+- cross-entropy + logits 仍然是大头，已通过“只算可训练 token”削掉约一半；
 - 0.1B 的每层矩阵较小（768×768），tensor core 利用率不如大模型。
 
-继续增大 batch 在 bsz32–40 已经饱和；再往上需要更激进的 logits/CE 融合或
+继续增大 batch 在 bsz32–48 已经饱和；再往上需要更激进的 logits/CE 融合或
 自定义 kernel，收益/风险比不高。
 
 ---
@@ -179,6 +183,10 @@ fla 源码里没有“log-decay 必须 ≤ -0.5”的硬限制。实测 `clampw`
 - **fla**：`w` → `log_w`；补齐位 `-60` → `0`；统一混合精度 dtype。
 - **infctx**：每个 chunk 立即 backward（`train.infctx_backward`），
   显存与 `ctx_len` 解耦；DDP/DeepSpeed/`infctx_detach=false` 自动回退旧路径。
+- **只对可训练 token 过 lm_head**：SFT 约一半 prompt token 不再产生 65536 维
+  logits，+9% 且显著省显存。
+- **修正 `train.compile`**：之前编译的是整个 model，但训练前向一直没走编译
+  路径；现在直接编译 `forward_hidden` / `forward_chunk_hidden`，fla 下 +20%。
 - **L2Wrap**：改为在 CE 梯度上原地 `scatter_add`，闭包只捕获小的
   max_value/indices，避免每步 2 GiB 分配和引用环泄漏。
 - **native**：缓存下三角掩码，`solve_triangular` 用 `unitriangular=True`

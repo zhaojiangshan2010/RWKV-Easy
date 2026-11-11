@@ -326,9 +326,9 @@ DeepSpeed 的两个额外处理：
 
 ## 11. 性能画像
 
-0.1B / ctx512 / bf16-full / fla：bsz32 单步约 443ms（8192 token），
-**37K tok/s ≈ 41 TFLOPS**；State bsz32 约 43K tok/s ≈ 49 TFLOPS。
-设备 bf16 matmul 峰值 62–74 TFLOPS，已经用到 60–75%。
+0.1B / ctx512 / bf16-full / fla + compile：bsz32 单步约 338ms（8192 token），
+**48.5K tok/s ≈ 55.6 TFLOPS**；State + reduce-overhead 约 56.3K tok/s ≈ 64.5 TFLOPS。
+设备 bf16 matmul 峰值 62–74 TFLOPS，已经用到 75–90%。
 
 profile（bsz24）里 GPU 时间大致是：elementwise ~38%、`aten::mm` ~26%、
 `aten::copy_` ~17%、fla WKV ~9%。因此：
@@ -336,12 +336,16 @@ profile（bsz24）里 GPU 时间大致是：elementwise ~38%、`aten::mm` ~26%�
 - **`bf16-full` 是最大单项收益**：基座权重直接 bf16，消掉 autocast 每次
   Linear 的 fp32→bf16 权重转换；LoRA/time_state 仍是 fp32。
   bsz16：23.8K → 34.8K tok/s，显存 14.6 → 8.9 GiB；
-- **batch 要加大**：fla bsz4→32 从 17.4K 涨到 37.0K；bsz40 开始饱和；
-- `torch.compile` 没有稳定收益（GPU-bound，fla 已是融合内核）；
+- **只对可训练 token 过 lm_head**：SFT 里约一半 prompt token 不需要 logits，
+  0.1B 再 +9%，显存也明显下降；
+- **batch 要加大**：fla bsz4→32 从 17.4K 涨到 40.3K（eager）；
+- **`torch.compile` 编译训练前向**：`forward_hidden`（不含 head）+20%
+  （40.3K → 48.5K）。注意编译整个 model 不会生效，因为 Trainer 调用的是
+  原始前向；`reduce-overhead` 还能进一步降显存；
 - `wkv_chunk` 只影响 native；clampw 下关闭动态分块检查，避免每块 `.item()`；
 - L2Wrap 改为在原地梯度上 scatter_add，省掉每步 2 GiB 全量梯度；
 - infctx 每个 chunk 立即 backward，显存从 O(ctx_len) 变成 O(chunk_ctx)：
-  8K ctx 12.4 → 4.7 GiB，32K ctx 也能在 24GB 卡上训练。
+  8K ctx 12.4 → 3.4 GiB，32K ctx 也能在 24GB 卡上训练。
 
 native 在 clampw 下用 bsz24–26 可到 20.1–20.3K tok/s；softplus/exp 模式会先用
 一次 reduce 估算安全块长，真实权重的 softplus log-decay 约为 -2～-7，

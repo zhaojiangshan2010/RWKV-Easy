@@ -85,7 +85,8 @@ rwkv-easy train -c configs/lora.yaml --set train.lr=2e-4 --set data.val_ratio=0.
 | `keep_last` | int | `2` | 只保留最近 N 组 checkpoint |
 | `merge_at_end` | bool | `true` | 训练结束自动导出 `merged.pth` |
 | `val_every_steps` | int | `0` | 每多少 step 跑一次验证集；0 关闭 |
-| `compile` | bool | `false` | `torch.compile`（实验性，Windows 首次编译较慢） |
+| `compile` | bool | `false` | 编译训练前向 `forward_hidden`；fla 下约 +20%，首次启动慢 |
+| `compile_mode` | str | `default` | `default` / `reduce-overhead` / `max-autotune` |
 | `device` | str | `auto` | `auto` / `cpu` / `cuda` / `cuda:0` |
 
 ### 精度的四种选择
@@ -110,7 +111,7 @@ rwkv-easy train -c configs/lora.yaml --set train.lr=2e-4 --set data.val_ratio=0.
 - `chunk_ctx` 是显存单位：开启 `infctx_backward: true`（默认）后，峰值显存
   只与 `chunk_ctx` 线性相关，与 `ctx_len` 无关；
 - `chunk_ctx: 2048` + `ctx_len: 8192` = 4 块；0.1B 在 24GB 卡上可跑到
-  32K 上下文（4.7 GiB）、37K tok/s；
+  32K 上下文（3.4 GiB）、33–37K tok/s；
 - `infctx_detach: true`（默认）意味着梯度不跨块回传，等价于截断 BPTT；
   如果数据里长距离依赖非常重要，可以设 `false`，但此时会回退到
   “最后统一 backward”，显存随 `ctx_len` 增长；
@@ -215,7 +216,8 @@ target_modules: [att.receptance, att.key, att.value, att.output]
 | `train.micro_batch_size` | 吞吐 ↑ / 显存 ↑ | 小模型优先加大；0.1B 从 bsz1→8 吞吐可涨 7 倍 |
 | `train.grad_accum` | 显存 ↓ / 速度 ≈ | 总 batch = micro × accum × GPU 数；只影响更新频率 |
 | `model.wkv_chunk` | 速度 ↑ / 精度略降 | native 默认 64，96 是上限；fla 固定 64，此字段无效 |
-| `train.compile` | 速度 ↑ / 首次启动慢 | `torch.compile`，小模型约 +30%；Windows 首次编译较慢；fla 本身已融合，收益较小 |
+| `train.compile` | 速度 ↑ / 首次启动慢 | 编译训练前向（不含 head）；fla 下 40.3K → 48.5K tok/s |
+| `train.compile_mode` | 速度/显存 | `reduce-overhead` State 56.3K、9.2 GiB；`max-autotune` 略快但编译约 8 分钟 |
 | `train.grad_checkpoint` | 显存 ↓ / 速度 ↓ | infctx 下建议开；显存充足时可关（约快 1.7 倍，显存 ×3） |
 | `train.precision` | 显存 / 速度 | GPU 用 `bf16-full`（基座 bf16、适配器 fp32）；CPU 必须 `fp32` |
 | `train.chunk_ctx` | 显存 ↓ / 速度 ↓ | infctx 的显存单位；2048 在 0.1B/0.4B 上效率最高 |

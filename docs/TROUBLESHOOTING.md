@@ -109,7 +109,7 @@ CPU 上请一律用 `precision: fp32`。
 - CUDA 上优先 `model.backend: fla`：0.1B / ctx512 / bsz4 实测 13.7–16.1K tok/s，
   native 同配置约 3.9K；
 - `model.wkv_chunk: 96`（native 后端上限）可减少分块数；
-- `train.compile: true` 可以融合大量 elementwise 算子（小模型约 +30%）；
+- `train.compile: true` 编译训练前向，fla 下约 +20%（0.1B：40.3K → 48.5K）；
 - `chunk_ctx` 太小会让分块串行开销占比变高，显存允许时适当增大；
 - 想要 Triton 内核需要 `rwkv-fla` + 新版 torch/triton，见上面的安装说明。
 
@@ -282,8 +282,13 @@ infctx 需要定长、无 padding 的样本。改 `data.mode: packed`，或关�
 - 确保推理模板与训练时的 `data.template` 完全一致；
 - 不要手动拼 `assistant_prefix + 内容` 之外的变体（多一个空格/换行都可能有影响）。
 
-**`torch.compile` 报错**
-关掉 `train.compile`。Windows 上首次编译也可能很慢。
+**`torch.compile` 报错 / 首次启动极慢**
+- 关掉 `train.compile`；Windows 上首次编译也可能很慢。
+- 现在编译的是训练前向 `forward_hidden`，fla 下约 +20%；`compile_mode:
+  reduce-overhead` 还能降低显存（State 9.2 GiB）。
+- **native + compile 首次编译可能十几分钟**（WKV 里有大量小算子和三角求解），
+  不建议开启；native 用 eager 即可。
+- `max-autotune` 会再快一点，但首次编译约 8 分钟，适合长期训练。
 
 **训练目录越来越大**
 `train.keep_last` 控制保留的 checkpoint 数；`merge_at_end: true` 会额外生成
