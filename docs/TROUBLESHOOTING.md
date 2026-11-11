@@ -282,12 +282,12 @@ infctx 需要定长、无 padding 的样本。改 `data.mode: packed`，或关�
 - 确保推理模板与训练时的 `data.template` 完全一致；
 - 不要手动拼 `assistant_prefix + 内容` 之外的变体（多一个空格/换行都可能有影响）。
 
-**`torch.compile` 报错 / 首次启动极慢**
+**`torch.compile` 报错 / 首次启动慢**
 - 关掉 `train.compile`；Windows 上首次编译也可能很慢。
-- 现在编译的是训练前向 `forward_hidden`，fla 下约 +20%；`compile_mode:
-  reduce-overhead` 还能降低显存（State 9.2 GiB）。
-- **native + compile 首次编译可能十几分钟**（WKV 里有大量小算子和三角求解），
-  不建议开启；native 用 eager 即可。
+- fla：编译训练前向 `forward_hidden`，+20%；`compile_mode: reduce-overhead`
+  还能降低显存（State 9.2 GiB）。
+- native：只编译 WKV 的 `_chunk` 单块图，+18%，首次约 25 秒。
+  不要尝试编译整个 native model（12 层 × N 块会展开，可能十几分钟）。
 - `max-autotune` 会再快一点，但首次编译约 8 分钟，适合长期训练。
 
 **训练目录越来越大**

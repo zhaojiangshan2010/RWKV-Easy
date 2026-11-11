@@ -15,8 +15,9 @@
 - **只对可训练 token 过 lm_head**：SFT 约一半 prompt token 不再产生
   65536 维 logits，+9% 并显著省显存。
 - **修正 `train.compile`**：之前编译整个 model 但前向没走编译路径；
-  现在直接编译 `forward_hidden` / `forward_chunk_hidden`，fla 下 +20%。
-  新增 `train.compile_mode`（default / reduce-overhead / max-autotune）。
+  现在 fla 编译 `forward_hidden`（+20%），native 只编译 WKV `_chunk`
+  （+18%，首次约 25s）。新增 `train.compile_mode`
+  （default / reduce-overhead / max-autotune）。
 - 新增 `tests/test_infctx_backward.py`、`tests/test_l2wrap.py`、
   `tests/test_head_selection.py`；测试总数 110。
 
@@ -24,7 +25,8 @@
 
 - fla LoRA：48.5K tok/s（ctx512/bsz32，compile，11.9 GiB）；
   State：56.3K（reduce-overhead，9.2 GiB）。
-- native LoRA：20.6K tok/s（bsz24，wkv_chunk 64），比最初 3.9K 提升 5 倍。
+- native LoRA：24.3K tok/s（bsz24，wkv_chunk 64，compile 单块），
+  比最初 3.9K 提升 6 倍；native infctx 2.3K → 5.1K。
 - infctx：ctx8192/chunk2048/bsz2 37.0K（3.4 GiB）；
   bsz10 41.7K（15.2 GiB）；ctx32768/chunk2048/bsz2 33.6K（3.4 GiB）。
 - State + infctx：72.6K tok/s（2.7 GiB，只有第一块需要反传）。
@@ -38,7 +40,8 @@
 - native 合并 4 个块内 matmul + 4D 布局：算子级略快，但显存更高、大 batch
   下 OOM，已回退。
 - TF32、native chunk 128：没有收益或直接 OOM。
-- native + `torch.compile`：首次编译超过 9 分钟仍未完成，不建议开启。
+- native 整模型 `torch.compile`：12 层 × N 块全部展开，首次编译 >9 分钟；
+  改为只编译 WKV `_chunk` 后 +18%。
 - native bf16 快速路径（块内 matmul 用 bf16、solve/状态仍 fp32）：
   相对 fp64 误差 4e-3（可接受），但速度 20.17K vs fp32 20.76K，没有收益，已回退。
 - LoRA forward 合并 B@A 进权重：50.44K vs 50.34K，在噪声内，未采用。

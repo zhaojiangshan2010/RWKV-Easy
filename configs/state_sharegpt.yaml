@@ -34,6 +34,8 @@ train:
   grad_clip: 1.0
   precision: bf16-full                 # GPU 推荐；time_state 仍是 fp32
   grad_checkpoint: true                # 0.1B/显存充足时可关
+  compile: true                        # native 下编译 WKV 单块；首次约 25s
+  compile_mode: default
   log_every: 10
   save_every_steps: 500
   save_every_epochs: 1

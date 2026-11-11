@@ -475,12 +475,13 @@ GPU（24GB Ampere 级，0.1B，bf16-full）：
 |---|---|---|---|---|
 | LoRA | **fla**（clampw） | ctx 512 / bsz 32 / compile | **≈48.5K tok/s** | 11.9 GiB |
 | LoRA | fla（clampw） | ctx 512 / bsz 32 / eager | ≈40.3K tok/s | 12.2 GiB |
-| LoRA | native（clampw） | ctx 512 / bsz 24 / chunk 64 | ≈20.6K tok/s | 17.6 GiB |
+| LoRA | native（clampw） | ctx 512 / bsz 24 / chunk 64 / compile | **≈24.3K tok/s** | 16.9 GiB |
+| LoRA | native（clampw） | ctx 512 / bsz 24 / chunk 64 / eager | ≈20.6K tok/s | 17.6 GiB |
 | LoRA | native（clampw） | ctx 512 / bsz 16 / chunk 96 | ≈19.0K tok/s | 15.0 GiB |
 | LoRA + infctx | **fla**（clampw） | ctx 8192 / chunk 2048 / bsz 2 / compile | **≈37.0K tok/s** | 3.4 GiB |
 | LoRA + infctx | **fla**（clampw） | ctx 8192 / chunk 2048 / bsz 10 / compile | **≈41.7K tok/s** | 15.2 GiB |
 | LoRA + infctx | **fla**（clampw） | ctx 32768 / chunk 2048 / bsz 2 | **≈33.6K tok/s** | 3.4 GiB |
-| LoRA + infctx | native（clampw） | ctx 8192 / chunk 2048 / bsz 2 | ≈2.3K tok/s | 7.5 GiB |
+| LoRA + infctx | native（clampw） | ctx 8192 / chunk 2048 / bsz 2 / compile | ≈5.1K tok/s | 5.9 GiB |
 | State | **fla**（clampw） | ctx 512 / bsz 32 / reduce-overhead | **≈56.3K tok/s** | 9.2 GiB |
 | State + infctx | **fla**（clampw） | ctx 8192 / chunk 2048 / bsz 2 | **≈72.6K tok/s** | 2.7 GiB |
 | DeepSpeed ZeRO-2 | **fla**（clampw） | sample ctx 64 / bsz 2 | 首次编译 ~42s，之后正常 | 1.5 GiB |
@@ -493,9 +494,9 @@ tok/s 不能直接比较。上面的 fla/native 行已经尽量固定其它变�
 每次 Linear 的 fp32→bf16 权重转换。0.1B / ctx512 / bsz16 从 23.8K 提到 34.8K
 （+46%），显存 14.6 → 8.9 GiB；LoRA 参数与 `time_state` 仍然是 fp32，精度不受影响。
 
-`train.compile: true` 现在编译的是训练真正调用的 `forward_hidden`（之前编译整个
-model 但前向没走编译路径），fla 下再 +20%；首次启动会有几十秒编译时间。
-native + compile 首次编译可能十几分钟，不建议开启。
+`train.compile: true` 现在按后端选择编译对象：fla 编译训练真正调用的
+`forward_hidden`（+20%）；native 只编译 WKV 的 `_chunk` 单块图（+18%，
+首次约 25 秒）。编译整个 model 对 native 不现实（12 层 × N 块全部展开）。
 
 `fla` 在 CUDA 上明显更快，且支持官方权重的 `clampw`，不需要改衰减口径。
 用 fla 时建议保持 bf16 / bf16-full：它的内核内部按 bf16 累加，纯 fp32 输入
@@ -524,9 +525,9 @@ native + compile 首次编译可能十几分钟，不建议开启。
 | 旋钮 | 建议 | 实测效果（0.1B，ctx512） |
 |---|---|---|
 | `train.precision` | GPU 用 `bf16-full` | bsz16：23.8K → 34.8K tok/s，显存 14.6 → 8.9 GiB |
-| `model.backend` + `train.compile` | CUDA 上 fla + compile | native 20.6K → fla eager 40.3K → fla + compile 48.5K |
+| `model.backend` + `train.compile` | CUDA 上 fla + compile | native eager 20.6K → fla eager 40.3K → fla + compile 48.5K |
 | `micro_batch_size` | 显存允许就加大 | fla 从 bsz4→32：17.4K → 37.0K（eager） |
-| `train.compile_mode` | 默认 `default` | `reduce-overhead` State 56.3K、显存 9.2 GiB；`max-autotune` +1.2K 但编译约 8 分钟 |
+| `train.compile_mode` | 默认 `default` | native 单块编译 +18%（约 25s）；State reduce-overhead 56.3K；max-autotune +1.2K 但编译约 8 分钟 |
 | `model.wkv_chunk` | native 用 64/80（96 上限） | native bsz24：64→20.6K，80→20.2K |
 | `train.infctx_backward` | 保持 `true` | 8K ctx：12.4 → 3.4 GiB，可训 32K |
 | `train.grad_checkpoint` | infctx 下可关 | 8K ctx：23.7K → 32.5K tok/s |

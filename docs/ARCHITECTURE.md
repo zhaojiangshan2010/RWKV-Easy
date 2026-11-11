@@ -339,16 +339,16 @@ profile（bsz24）里 GPU 时间大致是：elementwise ~38%、`aten::mm` ~26%�
 - **只对可训练 token 过 lm_head**：SFT 里约一半 prompt token 不需要 logits，
   0.1B 再 +9%，显存也明显下降；
 - **batch 要加大**：fla bsz4→32 从 17.4K 涨到 40.3K（eager）；
-- **`torch.compile` 编译训练前向**：`forward_hidden`（不含 head）+20%
-  （40.3K → 48.5K）。注意编译整个 model 不会生效，因为 Trainer 调用的是
-  原始前向；`reduce-overhead` 还能进一步降显存；
+- **`torch.compile` 按后端选择对象**：fla 编译 `forward_hidden`（不含 head，
+  +20%）；native 只编译 WKV `_chunk` 单块图（+18%），整模型展开会编译十几分钟；
+  `reduce-overhead` 还能进一步降显存；
 - `wkv_chunk` 只影响 native；clampw 下关闭动态分块检查，避免每块 `.item()`；
 - L2Wrap 改为在原地梯度上 scatter_add，省掉每步 2 GiB 全量梯度；
 - infctx 每个 chunk 立即 backward，显存从 O(ctx_len) 变成 O(chunk_ctx)：
   8K ctx 12.4 → 3.4 GiB，32K ctx 也能在 24GB 卡上训练。
 
-native 在 clampw 下用 bsz24–26 可到 20.1–20.3K tok/s；softplus/exp 模式会先用
-一次 reduce 估算安全块长，真实权重的 softplus log-decay 约为 -2～-7，
+native 在 clampw 下用 bsz24 可到 24.3K tok/s（compile WKV 单块）；softplus/exp
+模式会先用一次 reduce 估算安全块长，真实权重的 softplus log-decay 约为 -2～-7，
 块长会被压到 8 左右，吞吐降到约 130 tok/s——CUDA 上应直接用 fla。
 
 详细数字与复现命令见 [`GPU_VERIFICATION.md`](GPU_VERIFICATION.md)。
