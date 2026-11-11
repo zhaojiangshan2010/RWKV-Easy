@@ -123,6 +123,7 @@ fla WKV 内核       ~9%
 | native 缓存三角掩码 + `unitriangular=True` | chunk96：18.65K → 18.98K tok/s |
 | native 大 batch（bsz24） | 20.6K tok/s |
 | native 只编译 WKV `_chunk` | 20.6K → 24.3K tok/s（+18%，首次约 25s）；infctx 2.3K → 5.1K |
+| native `wkv_chunk` 32/64/80（compile） | 17.5K / 24.3K / 24.2K；fla 忽略该字段（k32 与 k96 都是 48.1K） |
 
 ### 3.3 试过但没有保留
 

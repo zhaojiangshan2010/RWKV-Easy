@@ -216,7 +216,7 @@ target_modules: [att.receptance, att.key, att.value, att.output]
 | `model.backend` | 速度 ↑↑ | CUDA 上优先 `fla`：0.1B ctx512/bsz32 48.5K vs native 24.3K（均 compile） |
 | `train.micro_batch_size` | 吞吐 ↑ / 显存 ↑ | 小模型优先加大；fla bsz4→32 从 17.4K 涨到 40.3K（eager） |
 | `train.grad_accum` | 显存 ↓ / 速度 ≈ | 总 batch = micro × accum × GPU 数；只影响更新频率 |
-| `model.wkv_chunk` | 速度 ↑ / 精度略降 | native 默认 64，96 是上限；fla 固定 64，此字段无效 |
+| `model.wkv_chunk` | 速度 ↑ / 精度略降 | 只影响 native：编译后 bsz24 下 32→17.5K、64→24.3K、80→24.2K；fla 固定 64，此字段无效 |
 | `train.compile` | 速度 ↑ / 首次启动慢 | fla 编译前向 40.3K → 48.5K；native 编译 WKV 单块 20.6K → 24.3K |
 | `train.compile_mode` | 速度/显存 | `reduce-overhead` State 56.3K、9.2 GiB；`max-autotune` 略快但编译约 8 分钟 |
 | `train.grad_checkpoint` | 显存 ↓ / 速度 ↓ | infctx + per-chunk backward 后通常可关；8K ctx 23.7K → 34.6K |

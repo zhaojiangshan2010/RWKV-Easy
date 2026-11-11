@@ -539,7 +539,7 @@ tok/s 不能直接比较。上面的 fla/native 行已经尽量固定其它变�
 | `model.backend` + `train.compile` | CUDA 上 fla + compile | native eager 20.6K → fla eager 40.3K → fla + compile 48.5K |
 | `micro_batch_size` | 显存允许就加大 | fla 从 bsz4→32：17.4K → 40.3K（eager） |
 | `train.compile_mode` | 默认 `default` | native 单块编译 +18%（约 25s）；State reduce-overhead 56.3K；max-autotune +1.2K 但编译约 8 分钟 |
-| `model.wkv_chunk` | native 用 64/80（96 上限） | native bsz24 eager：64→20.6K，80→20.2K |
+| `model.wkv_chunk` | 只影响 native；64 是甜点 | native compile bsz24：32→17.5K，64→24.3K，80→24.2K；fla 忽略此字段 |
 | `train.infctx_backward` | 保持 `true` | 8K ctx：12.4 → 3.4 GiB，可训 32K |
 | `train.grad_checkpoint` | infctx 下可关 | 8K ctx：23.7K → 34.6K tok/s（bsz2） |
 

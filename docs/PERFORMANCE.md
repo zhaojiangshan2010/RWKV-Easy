@@ -65,6 +65,28 @@ bf16 累加，纯 fp32 输入会提示“内核不支持 fp32”。
 
 没有 `rwkv-fla`（或版本不兼容）时用 native；native 在 CPU 上也能跑。
 
+#### `model.wkv_chunk` 只影响 native
+
+`wkv_chunk` 是 **native 后端内部的 WKV 分块长度**，不是 infctx 的
+`train.chunk_ctx`。fla 的内核固定按 64 分块，这个字段对 fla 完全无效：
+
+| 后端 | `wkv_chunk: 32` | `wkv_chunk: 64` | `wkv_chunk: 80` |
+|---|---|---|---|
+| fla（bsz32，compile） | 48.16K tok/s | 48.5K | 48.14K（96） |
+| native（bsz24，compile） | 17.49K | **24.26K** | 24.18K |
+
+native 的规律：
+
+- 太小（32）：每个 token 被切成更多小块，Python/kernel 启动和三角求解次数
+  翻倍，GPU 利用率明显下降；
+- 64–80 是甜点：块内 matmul 足够大、启动次数可接受、三角求解 O(L³) 还没失控；
+- 太大（96 以上）：fp32 的指数安全范围接近上限，且中间矩阵/求解成本增长；
+  native 构造函数会把上限夹到 96；
+- softplus/exp 模式还会根据最强 log-decay 自动缩小实际块长，配置值只是上限。
+
+所以：**fla 用户不用改 `wkv_chunk`；native 用户保持 64，显存紧张时可试
+80–96 + 更小 batch。**
+
 ### 2.3 `train.compile: true`（按后端选择编译对象）
 
 | 后端 | 编译什么 | 实测 |
