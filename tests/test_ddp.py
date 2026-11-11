@@ -38,7 +38,7 @@ def test_ddp_two_processes(tmp_path, tiny_checkpoint, tiny_sharegpt):
         overrides=[],
         resume=None,
         run_dir=str(run_dir),
-        device=None,
+        device="cpu",
         backend=None,
         log_level=None,
     )

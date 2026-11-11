@@ -28,8 +28,9 @@ chunked delta-rule 同构，但完全用 PyTorch 写成，因此 CPU / CUDA / RO
 
 * 全部中间量用 **float32** 计算（三角求解也只支持 fp32/fp64）。
 * 衰减因子的指数范围可能很大：``exp(-logD)`` 在 log-decay 很负时会溢出。
-  这里用 **自适应二分**：若块内累计衰减超过 ``max_decay_span``，就把块对半
-  切开递归处理。块边界在数学上是透明的（状态照常传递），所以结果完全不变。
+  这里先用一次 reduce 求出本 batch 的最强单 token 衰减，据此把块长压到
+  安全范围内（``chunk * max_rate <= max_decay_span``），再顺序分块。
+  分块在数学上是透明的（状态照常传递），结果完全不变。
 * ``log_decay`` 下限截断到 -80，避免极端权重下 ``exp`` 溢出（此时衰减已经是
   ``e^-80 ≈ 0``，对 fp32 而言与 0 无异）。
 """
@@ -119,11 +120,25 @@ class NativeBackend:
         if state32 is None:
             state32 = r32.new_zeros(batch, heads, head_dim, head_dim)
 
+        # softplus / exp 的 log-decay 没有上界，块内累计衰减可能超过 fp32 的
+        # 安全范围。这里只做 **一次** GPU 同步，用最负的 log-decay 估算本 batch
+        # 允许的最大块长；之后所有块都用这个长度顺序处理。
+        # （旧实现是每个块递归二分 + 每层一次 `.item()`，真实权重下会把 64
+        #  切成 4/8，并产生上百次同步，实测慢 30 倍以上。）
+        chunk = self.chunk
+        if self.dynamic_split and length > 1:
+            max_rate = float(-w32.min().item())  # 单个 token 的最大衰减（正数）
+            if max_rate > 0:
+                allowed = max(1, int(self.max_decay_span / max_rate))
+                if allowed >= 8:
+                    allowed = (allowed // 8) * 8
+                chunk = min(chunk, allowed)
+
         outputs: list[torch.Tensor] = []
         start = 0
         while start < length:
-            end = min(start + self.chunk, length)
-            chunk_out, state32 = self._segment(
+            end = min(start + chunk, length)
+            chunk_out, state32 = self._chunk(
                 r32[:, start:end],
                 k32[:, start:end],
                 v32[:, start:end],
@@ -137,37 +152,6 @@ class NativeBackend:
 
         out = torch.cat(outputs, dim=1) if len(outputs) > 1 else outputs[0]
         return out.to(out_dtype), state32.to(out_dtype)
-
-    # ------------------------------------------------------------------ #
-    # 自适应分块
-    # ------------------------------------------------------------------ #
-
-    def _segment(
-        self,
-        r: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        a: torch.Tensor,
-        b: torch.Tensor,
-        w: torch.Tensor,
-        state: torch.Tensor,
-        depth: int = 0,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        length = r.shape[1]
-        if self.dynamic_split and length > 1 and depth < 16:
-            # 该块内所有通道中最强的累计衰减（正数）。注意这里会触发一次
-            # GPU 同步，只在 softplus/exp 这类无上界的模式里才需要。
-            span = float(-w.sum(dim=1).min().item())
-            if span > self.max_decay_span:
-                mid = length // 2
-                out1, state = self._segment(
-                    r[:, :mid], k[:, :mid], v[:, :mid], a[:, :mid], b[:, :mid], w[:, :mid], state, depth + 1
-                )
-                out2, state = self._segment(
-                    r[:, mid:], k[:, mid:], v[:, mid:], a[:, mid:], b[:, mid:], w[:, mid:], state, depth + 1
-                )
-                return torch.cat([out1, out2], dim=1), state
-        return self._chunk(r, k, v, a, b, w, state)
 
     # ------------------------------------------------------------------ #
     # 单块

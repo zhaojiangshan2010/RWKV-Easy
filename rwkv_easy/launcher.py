@@ -18,6 +18,7 @@ import os
 import socket
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import torch
@@ -77,6 +78,17 @@ def relaunch(
     if random_init:
         child_args += ["--random-init"]
 
+    # 只有一个进程时不需要多卡检查；显式用 CPU 调试多进程时也跳过。
+    if nproc > 1 and (device or "auto").lower() != "cpu" and torch.cuda.is_available():
+        available = torch.cuda.device_count()
+        if nproc > available:
+            print(
+                f"[rwkv-easy] 请求 {nproc} 个训练进程，但当前只检测到 {available} 张 GPU。\n"
+                f"  把 dist.num_gpus 改成 {available}；如果想用 CPU 做多进程调试，"
+                f"加 `--device cpu`。"
+            )
+            return 2
+
     master_port = _free_port()
     base_env = dict(os.environ)
     base_env.update(
@@ -104,7 +116,24 @@ def relaunch(
                     env=env,
                 )
             )
-        codes = [process.wait() for process in processes]
+        # 轮询而不是逐个 wait：某个 rank 提前崩溃时立刻收掉其它进程，
+        # 否则卡在 init_process_group 的 rank 会空等到超时（默认 10 分钟）。
+        while True:
+            running = [process for process in processes if process.poll() is None]
+            if not running:
+                codes = [int(process.returncode) for process in processes]
+                break
+            failed = [process for process in processes if process.poll() not in (None, 0)]
+            if failed:
+                for process in running:
+                    process.terminate()
+                for process in running:
+                    try:
+                        process.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                return int(failed[0].returncode)
+            time.sleep(0.5)
     except KeyboardInterrupt:  # pragma: no cover
         for process in processes:
             if process.poll() is None:

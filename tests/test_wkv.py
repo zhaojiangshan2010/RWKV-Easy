@@ -43,8 +43,8 @@ def test_initial_state_matches():
     assert (state_ref.float() - state_nat).abs().max() < 1e-5
 
 
-def test_strong_decay_triggers_adaptive_split():
-    # log_decay ~ -4 会让累计衰减很大，必须触发二分而不能溢出。
+def test_strong_decay_stays_finite_and_accurate():
+    # log_decay ~ -4 会让块内累计衰减很大，必须自动缩小块长而不能溢出。
     tensors = _inputs(length=17, decay_scale=4.0)
     with torch.no_grad():
         out_ref, state_ref = ReferenceBackend(double=True).wkv7(*tensors)

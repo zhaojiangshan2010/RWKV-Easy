@@ -12,6 +12,7 @@ from __future__ import annotations
 import contextlib
 import os
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import Any
 
 import torch
@@ -66,13 +67,23 @@ def init_distributed(device: torch.device) -> DistInfo:
         return DistInfo(0, 0, 1)
 
     if device.type == "cuda":
-        torch.cuda.set_device(get_local_rank())
+        local_rank = get_local_rank()
+        available = torch.cuda.device_count()
+        if available and local_rank >= available:
+            raise RuntimeError(
+                f"LOCAL_RANK={local_rank} 超出可见 GPU 数量 {available}。"
+                f"请减小 dist.num_gpus，或检查 CUDA_VISIBLE_DEVICES。"
+            )
+        torch.cuda.set_device(local_rank)
         backend = "nccl"
     else:
         backend = "gloo"
     os.environ.setdefault("MASTER_ADDR", "127.0.0.1")
     os.environ.setdefault("MASTER_PORT", "29500")
-    torch.distributed.init_process_group(backend=backend, init_method="env://")
+    # 默认 10 分钟太长；初始化阶段不该有这么长的等待。
+    torch.distributed.init_process_group(
+        backend=backend, init_method="env://", timeout=timedelta(seconds=300)
+    )
     return DistInfo(get_rank(), get_local_rank(), world_size)
 
 
