@@ -39,6 +39,11 @@
   下 OOM，已回退。
 - TF32、native chunk 128：没有收益或直接 OOM。
 - native + `torch.compile`：首次编译超过 9 分钟仍未完成，不建议开启。
+- native bf16 快速路径（块内 matmul 用 bf16、solve/状态仍 fp32）：
+  相对 fp64 误差 4e-3（可接受），但速度 20.17K vs fp32 20.76K，没有收益，已回退。
+- LoRA forward 合并 B@A 进权重：50.44K vs 50.34K，在噪声内，未采用。
+- head+CE 单独编译：34.2 → 26.6 ms、显存 3.1 → 1.1 GiB，但只占整步约 2%，
+  集成 L2Wrap 的复杂度不值。
 
 ## 0.1.1 — 2026-11-11
 

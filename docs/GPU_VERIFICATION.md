@@ -126,6 +126,11 @@ fla WKV 内核       ~9%
 - native chunk 128：bsz24 直接 OOM，没有收益。
 - native + `torch.compile`：首次编译超过 9 分钟仍未完成（WKV 里大量小算子
   和三角求解），不适合作为默认路径。
+- native bf16 快速路径（块内 matmul bf16、solve/状态 fp32）：精度 rel 4e-3
+  可接受，但速度 20.17K vs fp32 20.76K，没有收益。
+- LoRA forward 合并 B@A 进权重：compile 下 50.44K vs 50.34K，噪声级。
+- head+CE 单独编译：34.2 → 26.6 ms、显存 3.1 → 1.1 GiB，但只占整步约 2%，
+  集成 L2Wrap 的复杂度不值。
 - L2Wrap 直接关闭：能到 37.4K（当时未 compile），但会丢掉稳定性项；
   最终保留 L2Wrap，用原地梯度实现拿回大部分收益。
 
