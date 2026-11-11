@@ -209,31 +209,48 @@ class Trainer:
                 self.backend_kind, model, self.optimizer, self.scheduler, dist, cfg, self.log
             )
 
-        # torch.compile：直接编译训练真正调用的 forward_hidden。
-        # 之前编译的是整个 model，但 Trainer 一直用 self.model 原始前向，
-        # 所以 compile 实际没有生效。编译前向（不含 lm_head）能融合大量
-        # elementwise，0.1B 实测 +23%。
+        # torch.compile：
+        # - fla：编译训练真正调用的 forward_hidden（整段/分块），+20%；
+        # - native：整模型编译会把 12 层 × N 块全部展开，首次编译可能 >9 分钟；
+        #   只编译 WKV 的 `_chunk`（单块图）即可，+14%。
         self._forward_hidden = self.model.forward_hidden
         self._forward_chunk_hidden = self.model.forward_chunk_hidden
         if cfg.train.compile:
-            try:
-                self._forward_hidden = torch.compile(
-                    self.model.forward_hidden,
-                    dynamic=False,
-                    mode=cfg.train.compile_mode,
-                )
-                # infctx 最后一块可能更短，用动态 shape。
-                self._forward_chunk_hidden = torch.compile(
-                    self.model.forward_chunk_hidden,
-                    dynamic=None,
-                    mode=cfg.train.compile_mode,
-                )
-                if is_main_process():
-                    self.log.info("已启用 torch.compile（训练前向，首次 step 可能较慢）")
-            except Exception as exc:  # pragma: no cover - 依平台而定
-                self._forward_hidden = self.model.forward_hidden
-                self._forward_chunk_hidden = self.model.forward_chunk_hidden
-                self.log.warning("torch.compile 失败（%s），继续使用 eager。", exc)
+            backend_obj = getattr(self.model, "backend", None)
+            if (
+                cfg.model.backend == "native"
+                and backend_obj is not None
+                and hasattr(backend_obj, "_chunk")
+            ):
+                try:
+                    backend_obj._chunk = torch.compile(
+                        backend_obj._chunk,
+                        dynamic=True,
+                        mode=cfg.train.compile_mode,
+                    )
+                    if is_main_process():
+                        self.log.info("已启用 torch.compile（native WKV 单块）")
+                except Exception as exc:  # pragma: no cover - 依平台而定
+                    self.log.warning("torch.compile（native WKV）失败（%s），继续 eager。", exc)
+            else:
+                try:
+                    self._forward_hidden = torch.compile(
+                        self.model.forward_hidden,
+                        dynamic=False,
+                        mode=cfg.train.compile_mode,
+                    )
+                    # infctx 最后一块可能更短，用动态 shape。
+                    self._forward_chunk_hidden = torch.compile(
+                        self.model.forward_chunk_hidden,
+                        dynamic=None,
+                        mode=cfg.train.compile_mode,
+                    )
+                    if is_main_process():
+                        self.log.info("已启用 torch.compile（训练前向，首次 step 可能较慢）")
+                except Exception as exc:  # pragma: no cover - 依平台而定
+                    self._forward_hidden = self.model.forward_hidden
+                    self._forward_chunk_hidden = self.model.forward_chunk_hidden
+                    self.log.warning("torch.compile 失败（%s），继续使用 eager。", exc)
 
         # fp16 的 GradScaler（DDP / 单卡）
         self.scaler = None
