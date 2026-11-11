@@ -32,8 +32,8 @@ rwkv-easy train -c configs/lora.yaml --set train.lr=2e-4 --set data.val_ratio=0.
 | `head_size` | int \| null | `null` | 每个注意力头的维度；默认从 `att.r_k` 推断 |
 | `head_size_divisor` | int | `8` | GroupNorm eps = `1e-5 * divisor^2`，官方值 8，一般不要改 |
 | `decay` | str | `auto` | 衰减公式：`auto` / `clampw` / `softplus` / `exp` |
-| `backend` | str | `native` | WKV 后端：`native` / `reference` / `fla`，或自定义注册的名字 |
-| `wkv_chunk` | int | `64` | WKV 内部分块长度（8–96）。只影响速度/显存，不影响数学结果 |
+| `backend` | str | `native` | WKV 后端：`native`（通用）/ `reference`（测试）/ `fla`（CUDA/ROCm Triton 加速），或自定义注册的名字 |
+| `wkv_chunk` | int | `64` | native 的内部分块长度（8–96）。只影响速度/显存，不影响数学结果；fla 固定按 64 分块 |
 | `dtype` | str \| null | `null` | 加载后强制转换权重 dtype：`fp32` / `bf16` / `fp16`；默认跟随 `train.precision` |
 
 ### 关于 `decay`
@@ -43,15 +43,17 @@ rwkv-easy train -c configs/lora.yaml --set train.lr=2e-4 --set data.val_ratio=0.
 | 模式 | log-decay | 衰减范围 | 来源 |
 |---|---|---|---|
 | `clampw` | `-exp(-0.5) * sigmoid(raw)` | [0.545, 1) | 参考实现的 CUDA `W_SCALE` 内核 |
-| `softplus` | `-softplus(-raw) - 0.5` | (0, 0.607] | 参考实现的 fla 路径；`rwkv-fla` 要求 |
+| `softplus` | `-softplus(-raw) - 0.5` | (0, 0.607] | 参考实现的 fla 路径 |
 | `exp` | `raw.clamp(max=0)` | (0, 1] | 旧版直接取 exp |
 
 用错不会报错，但模型输出会明显变差。`auto`（默认）会用内置的
 `assets/calib_text.txt` 分别跑一次前向，选语言建模 loss 最低的模式，并把结果
 缓存到 `runs/<实验>/.cache/decay_calibration.json`。
 
-> `backend: fla` 只支持 `decay: softplus`（Triton 内核要求 log-decay ≤ -0.5），
-> 配置冲突时 `resolve()` 会直接报错。
+> `backend: fla` 支持全部三种 decay（它接收的是已经变换好的 log-decay，
+> 内部走 `log_w` 参数）。官方权重用 `clampw` 即可，不需要改成 softplus。
+> fla 在 CUDA 上实测比 native 快约 3.5–4 倍（0.1B / ctx512 / bsz4：
+> 13.7–16.1K vs 3.9K tok/s），但需要 CUDA/ROCm + Triton ≥ 3.2，且建议用 bf16。
 
 ## `train` —— 训练超参
 
@@ -198,15 +200,17 @@ target_modules: [att.receptance, att.key, att.value, att.output]
 
 | 字段 | 方向 | 说明 |
 |---|---|---|
+| `model.backend` | 速度 ↑↑ | CUDA 上优先 `fla`：0.1B / ctx512 / bsz4 从 3.9K 涨到 13.7–16.1K tok/s |
 | `train.micro_batch_size` | 吞吐 ↑ / 显存 ↑ | 小模型优先加大；0.1B 从 bsz1→8 吞吐可涨 7 倍 |
 | `train.grad_accum` | 显存 ↓ / 速度 ≈ | 总 batch = micro × accum × GPU 数；只影响更新频率 |
-| `model.wkv_chunk` | 速度 ↑ / 精度略降 | 64 默认，96 是 native 后端上限（更大值会被夹到 96） |
-| `train.compile` | 速度 ↑ / 首次启动慢 | `torch.compile`，小模型约 +30%；Windows 首次编译较慢 |
+| `model.wkv_chunk` | 速度 ↑ / 精度略降 | native 默认 64，96 是上限；fla 固定 64，此字段无效 |
+| `train.compile` | 速度 ↑ / 首次启动慢 | `torch.compile`，小模型约 +30%；Windows 首次编译较慢；fla 本身已融合，收益较小 |
 | `train.grad_checkpoint` | 显存 ↓ / 速度 ↓ | infctx 下建议开；显存充足时可关（约快 1.7 倍，显存 ×3） |
-| `train.precision` | 显存 / 速度 | GPU 用 `bf16`；CPU 必须 `fp32`（bf16 反传慢约 75 倍） |
+| `train.precision` | 显存 / 速度 | GPU 用 `bf16`；CPU 必须 `fp32`（bf16 反传慢约 75 倍）；fla 也建议 bf16 |
 | `train.chunk_ctx` | 显存 ↓ / 速度 ↓ | infctx 的显存单位，越小越省显存也越慢 |
 | `dist.mode: deepspeed` | 显存 ↓ | ZeRO 分片；单卡也能用，多卡节省优化器状态 |
 
 ## 完整示例
 
-见 `configs/` 目录下的六个模板，每个字段都有中文注释。
+见 `configs/` 目录下的八个模板（`lora_sharegpt_fla.yaml` 是 CUDA + Triton 加速版），
+每个字段都有中文注释。

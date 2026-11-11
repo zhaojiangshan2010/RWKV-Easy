@@ -126,9 +126,10 @@ class WKV7Fn(torch.autograd.Function):
 - **ROCm**：PyTorch 在 ROCm 上把设备暴露成 `cuda`，`native` 后端**直接可用**，
   不需要任何额外代码。
 - **Triton**：`rwkv-fla` 同时支持 CUDA/ROCm。装好之后 `model.backend: fla`
-  即可；它要求 `model.decay: softplus`。
+  即可；它接收 log-decay（走 `log_w` 参数），clampw / softplus / exp 都支持。
 - 想自己写 Triton：按上面的契约实现 `wkv7`，注意 Triton 内核通常要求
   `T` 是块长的倍数，可以在你的后端里自行 pad（参考 `backends/fla.py`）。
+  补齐位必须用 `log_decay = 0` + 全零 k/v/a/b，不能做强衰减。
 
 ### 1.5 必须通过的测试
 

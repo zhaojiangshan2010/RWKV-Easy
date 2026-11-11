@@ -48,8 +48,17 @@ python -m venv ~/venv-fla
 ~/venv-fla/bin/pip install rwkv-fla pyyaml
 ```
 
-注意 fla 后端要求 `model.decay: softplus`；而官方权重的正确口径是 `clampw`
-（见 [`MODEL_CHECK.md`](MODEL_CHECK.md)）。追求质量时先留在 `native`。
+注意 fla 支持全部三种 decay（内部走 `log_w`），官方权重的 `clampw` 可以直接用，
+不需要改成 softplus；建议保持 `precision: bf16`（内核按 bf16 累加）。
+
+**fla 报 `Both operands must be same dtype. Got bf16 and fp32`**
+旧版适配层没有统一输入 dtype：bf16 autocast 下 `k * k_k` 会被 fp32 参数提升成
+fp32，而 value 仍是 bf16。当前版本已在 `backends/fla.py` 中统一到激活 dtype；
+如果仍遇到，确认用的是最新代码。
+
+**fla 第一次 step 特别慢 / 看起来卡住**
+Triton 正在编译内核，通常几十秒，之后会走缓存。DeepSpeed + fla 首次初始化
+也可能多花 30–60 秒，属于正常现象。
 
 **Windows 上 `torchrun` 报 `use_libuv was requested but PyTorch was built without libuv support`**
 这是精简版 PyTorch 的问题。本项目内置的启动器不使用 torchrun，不受影响；
@@ -97,10 +106,17 @@ CPU 上请一律用 `precision: fp32`。
 - 先看模型规模：0.1B 这类小模型是**算子启动开销受限**，不是算力受限。
   实测 bsz1→8 单步只从 365ms 涨到 378ms，吞吐却从 1.4K 涨到 10.8K tok/s
   ——优先加大 `micro_batch_size`；
+- CUDA 上优先 `model.backend: fla`：0.1B / ctx512 / bsz4 实测 13.7–16.1K tok/s，
+  native 同配置约 3.9K；
 - `model.wkv_chunk: 96`（native 后端上限）可减少分块数；
 - `train.compile: true` 可以融合大量 elementwise 算子（小模型约 +30%）；
 - `chunk_ctx` 太小会让分块串行开销占比变高，显存允许时适当增大；
-- 想要 Triton 内核需要 `rwkv-fla` + 新版 torch/triton，见下面的安装说明。
+- 想要 Triton 内核需要 `rwkv-fla` + 新版 torch/triton，见上面的安装说明。
+
+**native + softplus 特别慢**
+真实权重的 softplus log-decay 在 -2～-7 之间，块内累计衰减很大，native 会把
+块长压到 8 左右才能避免溢出（实测约 130 tok/s）。这不是 bug；CUDA 上用 fla，
+或者继续用官方权重对应的 `clampw`。
 
 **`nvidia-smi` 显示 `SMI N/A` / `Driver Version: N/A`**
 虚拟化 GPU 上常见。以 PyTorch 的查询为准：

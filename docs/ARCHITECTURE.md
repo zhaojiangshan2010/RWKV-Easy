@@ -123,13 +123,29 @@ RHS[j]  = Σ_c a[j,c] D_{j-1}[c] S_{-1}[c,:] + Σ_{i<j} ak[j,i] v_i
 
 - 所有输入先转 **float32**；三角求解只支持 fp32/fp64。
 - 指数一律用**差值**形式 `exp(logD_t - logD_j) ≤ 1`，避免 `1/cumprod` 溢出。
-- 如果某个块的累计衰减超过 60（对应 `e^-60`，已经远低于 fp32 精度），
-  就把块对半切开递归处理。块边界在数学上是透明的，所以结果完全不变。
+- 如果块内累计衰减可能超过 60（对应 `e^-60`，已经远低于 fp32 精度），
+  先用一次 reduce 求出本 batch 最强的单 token 衰减，把块长压到
+  `60 / max_rate`，再顺序分块。块边界在数学上是透明的，所以结果完全不变。
 - `log_decay` 下限截断到 -80，防止极端权重下 `exp` 溢出。
 - 外层的 autocast 会在后端内部被**关闭**，确保中间量始终是 fp32。
 
 `tests/test_wkv.py` 用 float64 逐 token 参考验证前向、状态和**全部梯度**，
 误差要求在 1e-5 以内。
+
+### 3.4 fla 后端
+
+`backends/fla.py` 适配 rwkv-fla 的 `chunk_rwkv7`，有两个容易踩的细节：
+
+- `chunk_rwkv7(w=...)` 的 `w` 是**原始 decay 参数**，内核内部会再算
+  `-exp(w)`；本项目传的已经是 log-decay，必须走 `log_w=`。
+- 长度不是 64 的倍数时，尾部用 `log_decay = 0` + 全零 k/v/a/b 补齐。
+  这表示“状态原样穿过”；用 -60 之类的强衰减会把携带的状态乘成 0。
+- 混合精度下各输入 dtype 可能不一致（例如 `kk` 被 fp32 参数提升），
+  适配层会统一到激活 dtype；Triton 的 `tl.dot` 要求两侧 dtype 相同。
+
+fla 内核按输入 dtype 计算（bf16 下与 fp64 参考相对误差 ~3e-3），
+clampw / softplus / exp 三种 decay 都支持。`tests/test_fla_backend.py`
+在没有 GPU 时自动跳过。
 
 ## 4. infctx：状态怎么传
 
@@ -305,6 +321,11 @@ DeepSpeed 的两个额外处理：
 - `torch.compile` 融合大量 elementwise：365→277ms；
 - 两者叠加：262ms/step。
 
-native 后端在 clampw 模式下关闭了动态二分（`dynamic_split=False`），避免
-每个分块一次 `.item()` 的 GPU 同步；softplus/exp 模式仍保留动态切分。
-详细数字与 fla 兼容性见 [`GPU_VERIFICATION.md`](GPU_VERIFICATION.md)。
+native 后端在 clampw 模式下关闭了动态分块检查（`dynamic_split=False`），避免
+每个分块一次 `.item()` 的 GPU 同步；softplus/exp 模式会先用一次 reduce 估算
+安全块长。真实权重的 softplus log-decay 约为 -2～-7，块长会被压到 8 左右，
+吞吐降到约 130 tok/s——这类场景在 CUDA 上应该直接用 fla。
+
+fla 后端（0.1B，ctx512/bsz4，bf16）实测 **13.7–16.1K tok/s、4.4 GiB**，
+同配置 native 约 3.9K tok/s、5.8 GiB；loss 曲线与 native 基本重合。
+详细数字见 [`GPU_VERIFICATION.md`](GPU_VERIFICATION.md)。

@@ -68,6 +68,9 @@ EOF
 rwkv-easy check-model -m models/你的模型.pth
 ```
 
+> GPU 上可以加 `--backend fla --dtype bf16`，顺便验证 rwkv-fla 内核；
+> 它的 decay 三种口径都支持，验收结论应与 native 一致。
+
 它会依次打印（下面是 `rwkv7-g1d-0.1b` 的真实输出）：
 
 ```

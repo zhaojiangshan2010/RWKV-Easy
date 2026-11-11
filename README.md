@@ -14,12 +14,12 @@
 
 | 范围 | 状态 |
 |---|---|
-| 数学正确性（WKV 前向/梯度、infctx 等价性、LoRA 合并） | ✅ CPU 上与 float64 参考对照，误差 < 1e-5 |
-| 数据管线（ShareGPT、completion-only mask、packed/sample） | ✅ 98 个测试覆盖 |
+| 数学正确性（WKV 前向/梯度、infctx 等价性、LoRA 合并） | ✅ CPU 上与 float64 参考对照，误差 < 1e-5；fla 与 fp64 相对误差 ~3e-3（bf16 内核） |
+| 数据管线（ShareGPT、completion-only mask、packed/sample） | ✅ 103 个测试覆盖（其中 5 个 fla 测试需要 CUDA） |
 | 端到端（训练、断点、合并、重载、bf16、2 进程 DDP） | ✅ CPU 上验证通过 |
 | 真实 RWKV-7 权重 | ✅ `rwkv7-g1d-0.1b` 在 CPU 与 GPU 上都已验收：decay=clampw，NLL 2.54，续写连贯 |
 | GPU 训练（LoRA / State / infctx / fp16 / DeepSpeed） | ✅ 24GB Ampere 级 GPU 全跑通，数字见 [`docs/GPU_VERIFICATION.md`](docs/GPU_VERIFICATION.md) |
-| rwkv-fla（Triton 后端） | ⏳ 测试环境 torch 2.2 / triton 2.2 与 rwkv-fla 0.7 不兼容；需 torch ≥ 2.4 + triton ≥ 3.2 |
+| rwkv-fla（Triton 后端） | ✅ torch 2.14 + CUDA 13 + triton 3.8 实测通过；支持 clampw / softplus / exp，0.1B ctx512 约 14K tok/s（native 约 3.9K） |
 
 本机（Windows + CPU）已验证的内容与复现命令见
 [`docs/CPU_VERIFICATION.md`](docs/CPU_VERIFICATION.md)。
@@ -57,6 +57,8 @@
 
 - **衰减公式自动校准**：不同版本的 RWKV-7 实现使用不同的 decay 参数化，用错不会报错、
   但模型输出会明显变差。RWKV-EASY 会用一段内置中英文本自动比较三种公式，选 loss 最低的那个。
+- **CUDA 上可选 Triton 加速**：`model.backend: fla` 直接调用 rwkv-fla 的融合内核，
+  0.1B 实测比纯 PyTorch 快约 4 倍，且支持官方权重使用的 `clampw`（不强制改衰减口径）。
 - **CPU 可完整自检**：`rwkv-easy selftest` 不需要下载任何权重，几分钟内跑完
   训练 → infctx → 保存 → 合并 → 重新加载 的完整链路。
 
@@ -214,7 +216,7 @@ python -m rwkv_easy train -c configs/my-lora-run.yaml --resume runs/xxx
 WKV 算子是纯 PyTorch 写的，所以整条链路都能在 CPU 上验证。三条命令：
 
 ```bash
-python -m pytest tests -q                      # 98 个测试，约 3-6 分钟
+python -m pytest tests -q                      # 103 个测试（5 个 fla 测试需要 CUDA，CPU 上跳过）
 python -m rwkv_easy selftest --full            # lora/state × infctx on/off × fp32/bf16
 python -m rwkv_easy train -c configs/debug_cpu.yaml   # 随机小模型，20 步
 ```
@@ -300,6 +302,7 @@ rwkv-easy train -c configs/lora_sharegpt_infctx.yaml \
 
 ```
 configs/lora_sharegpt.yaml
+configs/lora_sharegpt_fla.yaml        # CUDA + rwkv-fla，最快
 configs/state_sharegpt.yaml
 configs/lora_sharegpt_infctx.yaml
 configs/state_sharegpt_infctx.yaml
@@ -465,13 +468,24 @@ CPU 上一定要用 `precision: fp32`：bf16 参数的反向传播会慢约 75 �
 
 GPU（24GB Ampere 级，0.1B，bf16）：
 
-| 场景 | 配置 | 速度 | 显存 |
-|---|---|---|---|
-| LoRA | ctx 512 / bsz 4 | ≈4.6–5.0K tok/s | 5.8 GiB |
-| LoRA | ctx 1024 / bsz 2 | ≈2.5–2.8K tok/s | 5.8 GiB |
-| LoRA + infctx | ctx 4096 / chunk 512 / bsz 1 | ≈700 tok/s | 3.7 GiB |
-| State | ctx 512 / bsz 4 | ≈5.1–5.6K tok/s | 5.3 GiB |
-| fp16 / DeepSpeed ZeRO-2 | ctx 512 / bsz 2 | ≈2.3–2.5K tok/s | 3.4 GiB |
+| 场景 | 后端 | 配置 | 速度 | 显存 |
+|---|---|---|---|---|
+| LoRA | native（clampw） | ctx 512 / bsz 4 | ≈3.9–5.0K tok/s | 5.8 GiB |
+| LoRA | **fla**（clampw） | ctx 512 / bsz 4 | **≈13.7–16.1K tok/s** | 4.4 GiB |
+| LoRA | native（clampw） | ctx 1024 / bsz 2 | ≈2.5–2.8K tok/s | 5.8 GiB |
+| LoRA + infctx | native（clampw） | ctx 4096 / chunk 512 / bsz 1 | ≈700 tok/s | 3.7 GiB |
+| LoRA + infctx | **fla**（clampw） | ctx 1024 / chunk 256 / bsz 1 | ≈1.2K tok/s | 1.8 GiB |
+| State | native（clampw） | ctx 512 / bsz 4 | ≈5.1–5.6K tok/s | 5.3 GiB |
+| fp16 / DeepSpeed ZeRO-2 | native | ctx 512 / bsz 2 | ≈2.3–2.5K tok/s | 3.4 GiB |
+| DeepSpeed ZeRO-2 | **fla**（clampw） | sample ctx 64 / bsz 2 | 首次编译 ~42s，之后正常 | 1.5 GiB |
+
+`fla` 在 CUDA 上明显更快，且支持官方权重的 `clampw`，不需要改衰减口径。
+用 fla 时建议保持 `precision: bf16`：它的内核内部按 bf16 累加，纯 fp32 输入
+反而会收到“内核不支持 fp32”的警告。
+
+> native + softplus 在真实权重上会明显变慢（实测约 130 tok/s）：这些权重的
+> log-decay 在 -2～-7 之间，块内累计衰减很大，必须把块长压到 8 左右才不溢出。
+> 需要 softplus + CUDA 时请直接用 fla；native 在 clampw 下不受影响。
 
 0.1B 在 GPU 上是启动开销受限（bsz 1→8 单步耗时几乎不变）；模型越大，
 计算占比越高。完整分析见 [`docs/GPU_VERIFICATION.md`](docs/GPU_VERIFICATION.md)。
@@ -490,6 +504,7 @@ GPU（24GB Ampere 级，0.1B，bf16）：
 
 | 旋钮 | 建议 | 实测效果（0.1B, ctx512, bsz4） |
 |---|---|---|
+| `model.backend` | CUDA 上优先 `fla` | native clampw 3.9K → fla 13.7–16.1K tok/s |
 | `micro_batch_size` | 显存允许就加大 | bsz 1→8：单步 365→378ms，吞吐 1.4K→10.8K tok/s |
 | `model.wkv_chunk` | 96（native 后端上限） | 365→307 ms/step |
 | `train.compile` | `true`（首次启动慢） | 365→277 ms/step；与 chunk96 叠加 262ms/7.8K tok/s |
@@ -549,7 +564,7 @@ RWKV-EASY/
 │   └── assets/             # 内置词表、校准文本、示例数据
 ├── configs/                # 配置模板（含自我认知过拟合 demo）
 ├── docs/                   # 详细文档
-├── tests/                  # 纯 CPU 测试（含 2 进程 DDP）
+├── tests/                  # 103 个测试（CPU；fla 组需要 GPU，自动跳过）
 ├── examples/               # 示例数据（ShareGPT、自我认知实验数据）
 ├── CHANGELOG.md
 ├── install.sh / .bat / .ps1
@@ -579,7 +594,7 @@ RWKV-EASY/
 
 ```bash
 pip install -e ".[dev]"
-python -m pytest tests -q            # 全部纯 CPU
+python -m pytest tests -q            # 103 个（fla 组需要 CUDA，CPU 上跳过）
 python -m rwkv_easy selftest --full  # 8 种组合
 python -m ruff check rwkv_easy tests
 ```

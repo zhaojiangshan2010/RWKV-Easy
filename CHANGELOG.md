@@ -1,5 +1,44 @@
 # 变更记录
 
+## 0.1.1 — 2026-11-11
+
+第二次 GPU 验证（torch 2.14.1 + CUDA 13.0 + triton 3.8.0）。这一版的主题是
+**rwkv-fla 后端正式可用**。
+
+### 新增
+
+- `model.backend: fla` 通过验证：支持 clampw / softplus / exp 三种 decay，
+  不再强制 softplus；官方权重可以直接用 `clampw`。
+- 新增 `configs/lora_sharegpt_fla.yaml`（CUDA + Triton 加速模板）。
+- 新增 `tests/test_fla_backend.py`：与 fp64 参考对照、补齐路径、分块状态、
+  clampw、bf16 反传；没有 CUDA/rwkv-fla 时自动跳过。
+- launcher：请求进程数超过可见 GPU 数时提前报错；任一 rank 早退时立即
+  终止其它进程，不再空等 10 分钟。
+
+### 修复
+
+- **fla 参数语义**：`chunk_rwkv7` 的 `w` 是原始 decay 参数（内部再算
+  `-exp(w)`），必须把 log-decay 传给 `log_w`。此前误传 `w` 时 loss 仍会下降，
+  但数值与参考不一致。
+- **fla 补齐位**：长度不是 64 的倍数时用 `log_decay = 0`（不是 -60）+
+  全零 k/v/a/b，否则携带状态会被衰减成 0。
+- **fla dtype**：统一混合精度下各输入的 dtype，修复
+  `Both operands must be same dtype. Got bf16 and fp32`。
+- **native 动态分块**：softplus/exp 从递归二分改为一次 reduce 估算安全块长，
+  去掉每层 `.item()` 的 GPU 同步；真实权重下仍受衰减限制，但不再指数级变慢。
+- **DDP 测试**：显式 `--device cpu`，修复单卡 GPU 机器上 `num_gpus=2`
+  导致 rank 1 在 `set_device(1)` 崩溃、rank 0 空等的问题。
+- `init_process_group` 加 300 秒超时；`LOCAL_RANK` 超出可见 GPU 数时给出
+  明确错误。
+
+### 验证
+
+- 103 个测试通过（GPU 上含 5 个 fla 对照；CPU 上跳过）。
+- 0.1B / ctx512 / bsz4 / bf16：native clampw 约 3.9K tok/s（5.8 GiB），
+  fla 约 13.7–16.1K tok/s（4.4 GiB），loss 曲线基本重合。
+- fla + infctx、fla + State、fla + DeepSpeed ZeRO-2 均跑通。
+- fla 训练出的 State 适配器合并后，`generate` 正确回答 `RWKV 0.1B 大模型`。
+
 ## 0.1.0 — 2026-11-11
 
 首个可用版本。
