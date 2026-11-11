@@ -15,7 +15,7 @@
 | 范围 | 状态 |
 |---|---|
 | 数学正确性（WKV 前向/梯度、infctx 等价性、LoRA 合并） | ✅ CPU 上与 float64 参考对照，误差 < 1e-5；fla 与 fp64 相对误差 ~3e-3（bf16 内核） |
-| 数据管线（ShareGPT、completion-only mask、packed/sample） | ✅ 121 个测试覆盖（其中 5 个 fla 测试需要 CUDA） |
+| 数据管线（ShareGPT、completion-only mask、packed/sample） | ✅ 126 个测试覆盖（其中 5 个 fla 测试需要 CUDA） |
 | 端到端（训练、断点、合并、重载、bf16、2 进程 DDP） | ✅ CPU 上验证通过 |
 | 真实 RWKV-7 权重 | ✅ `rwkv7-g1d-0.1b` 在 CPU 与 GPU 上都已验收：decay=clampw，NLL 2.54，续写连贯 |
 | 一键安装 / 交互式配置 | ✅ `quickstart.py`：检测 CUDA → 装对应 PyTorch → 向导选 LoRA/State/infctx → 训练 |
@@ -256,7 +256,7 @@ python -m rwkv_easy train -c configs/my-lora-run.yaml --resume runs/xxx
 WKV 算子是纯 PyTorch 写的，所以整条链路都能在 CPU 上验证。三条命令：
 
 ```bash
-python -m pytest tests -q                      # 121 个（CPU 上 116 passed + 5 fla skipped）
+python -m pytest tests -q                      # 126 个（CPU 上 121 passed + 5 fla skipped）
 python -m rwkv_easy selftest --full            # lora/state × infctx on/off × fp32/bf16
 python -m rwkv_easy train -c configs/debug_cpu.yaml   # 随机小模型，20 步
 ```
@@ -679,7 +679,7 @@ RWKV-EASY/
 │   └── assets/             # 内置词表、校准文本、示例数据
 ├── configs/                # 配置模板（含自我认知过拟合 demo）
 ├── docs/                   # 详细文档
-├── tests/                  # 121 个测试（CPU 上跳过 5 个 fla）
+├── tests/                  # 126 个测试（CPU 上跳过 5 个 fla）
 ├── examples/               # 示例数据（ShareGPT、自我认知实验数据）
 ├── CHANGELOG.md
 ├── install.sh / .bat / .ps1
@@ -696,7 +696,7 @@ RWKV-EASY/
 |---|---|
 | 第一次跑通 / 懒人一键 | 本文「一键向导」、[`docs/WIZARD.md`](docs/WIZARD.md) |
 | 验收一份新权重 | [`docs/MODEL_CHECK.md`](docs/MODEL_CHECK.md) |
-| 调超参 / 查字段含义 | [`docs/CONFIG.md`](docs/CONFIG.md) |
+| 调超参 / 查字段含义 | [`docs/TRAINING_PARAMETERS.md`](docs/TRAINING_PARAMETERS.md)、[`docs/CONFIG.md`](docs/CONFIG.md) |
 | 搞清数据格式与 mask | [`docs/DATASET.md`](docs/DATASET.md) |
 | 解决报错 | [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md) |
 | 看性能数字与瓶颈 | [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md)、[`docs/GPU_VERIFICATION.md`](docs/GPU_VERIFICATION.md)、[`docs/CPU_VERIFICATION.md`](docs/CPU_VERIFICATION.md) |
@@ -709,7 +709,7 @@ RWKV-EASY/
 
 ```bash
 pip install -e ".[dev]"
-python -m pytest tests -q            # 121 个（CPU 上跳过 5 个 fla）
+python -m pytest tests -q            # 126 个（CPU 上跳过 5 个 fla）
 python -m rwkv_easy selftest --full  # 8 种组合
 python -m ruff check rwkv_easy tests
 ```

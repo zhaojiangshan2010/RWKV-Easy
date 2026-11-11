@@ -52,8 +52,10 @@ pip install -e .
 | 14 | 只对可训练 token 过 head | `tests/test_head_selection.py` | loss/梯度与整段 logits 等价 | 通过 |
 | 15 | L2Wrap 原地梯度 | `tests/test_l2wrap.py` | 与旧实现梯度逐元素一致 | 通过 |
 | 16 | 一键向导逻辑 | `tests/test_wizard.py` | CUDA 映射、默认值、路径校验、配置保存 | 通过 |
+| 17 | seed / runtime | `tests/test_runtime.py` | 种子导出、deterministic 开关 | 通过 |
+| 18 | 参数文档覆盖 | `tests/test_docs.py` | 所有 Config 字段都出现在 TRAINING_PARAMETERS.md | 通过 |
 
-全套 121 个测试，CPU 上 116 passed + 5 skipped（fla 组需要 CUDA），
+全套 126 个测试，CPU 上 121 passed + 5 skipped（fla 组需要 CUDA），
 约 3–6 分钟（bf16-full 在 CPU 上较慢）。
 
 ---
@@ -135,7 +137,7 @@ pip install -e .
 环境：Windows 10、Python 3.11.9、torch 2.15.0+cpu、无 GPU。
 
 ```
-pytest tests -q                                  -> 116 passed, 5 skipped（fla 组）
+pytest tests -q                                  -> 121 passed, 5 skipped（fla 组）
 rwkv-easy selftest --full --steps 8              -> 自检通过（8/8 组合）
 configs/debug_cpu.yaml（20 步）                  -> loss 11.2995 -> 11.1975
 state 长跑（200 步，lr 5e-2）                    -> loss 11.2833 -> 10.9647

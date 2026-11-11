@@ -1,5 +1,27 @@
 # 变更记录
 
+## 0.3.1 — 2026-11-12
+
+文档与可复现性收尾。
+
+### 新增
+
+- **`docs/TRAINING_PARAMETERS.md`**：覆盖 `Config` 全部字段（run / model /
+  train / lora / state / data / dist / log），包含类型、默认值、真实语义、
+  交互关系、校验规则、常用配方与代码位置。
+- `tests/test_docs.py`：自动检查参数手册是否覆盖所有配置字段，新增字段漏文档
+  会直接测试失败。
+- `tests/test_runtime.py`：验证 seed 导出与 deterministic 开关。
+
+### 修复
+
+- `run.seed` 现在写入 `RWKV_EASY_SEED`，DataLoader worker 的 NumPy/Python
+  随机种子会跟随配置，而不是固定 42。
+
+### 测试
+
+- 126 个测试通过（CPU 上 121 passed + 5 fla skipped）。
+
 ## 0.3.0 — 2026-11-12
 
 一键安装 + 交互式配置向导，并支持按 block 选择 LoRA 层。

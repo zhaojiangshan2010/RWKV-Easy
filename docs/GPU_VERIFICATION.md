@@ -36,7 +36,7 @@ CUDA 13.0、cuDNN 9.24、**triton 3.8.0**、DeepSpeed 0.19.8、
 - State + infctx 由于只有第一块需要反传，达到 **72.6K tok/s（2.7 GiB）**。
 - native + softplus 在真实权重上仍只有约 130 tok/s：log-decay 在 -2～-7，
   块长会被压到 8 左右。CUDA + softplus 请直接用 fla。
-- 全量测试 **121 个**（GPU 上全跑，CPU 上 5 个 fla 测试跳过）。
+- 全量测试 **126 个**（GPU 上全跑，CPU 上 5 个 fla 测试跳过）。
 
 ---
 
@@ -82,7 +82,7 @@ CUDA 13.0、cuDNN 9.24、**triton 3.8.0**、DeepSpeed 0.19.8、
 | DeepSpeed ZeRO-2（单卡） | fla，ctx512/bsz8，compile | 28.6K tok/s，3.7 GiB |
 | DeepSpeed ZeRO-2（单卡） | fla，sample ctx64/bsz2 | 首次编译 ~42s，之后正常，1.5 GiB |
 | 自我认知过拟合 | native，sample ctx64/bsz2，20 步 | 秒级，loss 5.25 → 0.001 |
-| 全量测试（CPU + GPU） | 121 个测试 | 约 80–85 秒 |
+| 全量测试（CPU + GPU） | 126 个测试 | 约 80–85 秒 |
 
 > **只看同配置对比**：不同 `ctx_len` / `chunk_ctx` / `micro_batch_size` 的绝对
 > tok/s 不可直接比较。早期表格里 State 的 fla 行用了 `sample ctx64/bsz2`
