@@ -181,6 +181,8 @@ def autocast_context(precision: str, device: torch.device):
 
 def seed_everything(seed: int, deterministic: bool = False) -> None:
     seed = int(seed) & 0x7FFFFFFF
+    # DataLoader 的 worker_init_fn 在子进程里读取这个环境变量。
+    os.environ["RWKV_EASY_SEED"] = str(seed)
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
