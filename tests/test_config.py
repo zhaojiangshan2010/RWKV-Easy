@@ -87,18 +87,14 @@ def test_validation_missing_paths(tmp_path):
     assert "model.path" in message
 
 
-def test_fla_forces_softplus(tmp_path, tiny_checkpoint, tiny_sharegpt):
-    cfg = build_config(
-        tmp_path, tiny_checkpoint(), tiny_sharegpt, {"model": {"backend": "fla", "decay": "auto"}}
-    )
-    cfg.resolve()
-    assert cfg.model.decay == "softplus"
-
-    cfg2 = build_config(
-        tmp_path, tiny_checkpoint(), tiny_sharegpt, {"model": {"backend": "fla", "decay": "clampw"}}
-    )
-    with pytest.raises(ConfigError):
-        cfg2.resolve()
+def test_fla_accepts_all_decay_modes(tmp_path, tiny_checkpoint, tiny_sharegpt):
+    # fla 的 chunk 核接收 log-decay（走 log_w）；三种口径都满足 <= 0。
+    for mode in ("auto", "clampw", "softplus", "exp"):
+        cfg = build_config(
+            tmp_path, tiny_checkpoint(), tiny_sharegpt, {"model": {"backend": "fla", "decay": mode}}
+        )
+        cfg.resolve()
+        assert cfg.model.decay == mode
 
 
 def test_template_is_loadable(tmp_path):

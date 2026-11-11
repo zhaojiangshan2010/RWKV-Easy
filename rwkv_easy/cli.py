@@ -126,7 +126,7 @@ def build_parser() -> argparse.ArgumentParser:
     check.add_argument("--max-tokens", type=int, default=32)
     check.add_argument("--dtype", default="fp32", choices=["fp32", "bf16", "fp16"])
     check.add_argument("--device", default="auto", help="auto / cpu / cuda")
-    check.add_argument("--backend", default="native", choices=["native", "reference"])
+    check.add_argument("--backend", default="native", choices=["native", "reference", "fla"])
     check.add_argument("--sample", action="store_true", help="采样（默认贪心）")
 
     return parser

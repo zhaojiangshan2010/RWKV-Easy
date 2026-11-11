@@ -15,6 +15,7 @@ model:
   path: models/rwkv7-g1d-0.4b.pth      # ← 改成你的 RWKV-7 权重
   decay: auto                          # auto = 用校准文本自动判断衰减公式
   backend: native                      # native = 纯 PyTorch，CPU/CUDA/ROCm 通用
+                                       # CUDA 上想更快可改 fla（见 lora_sharegpt_fla.yaml）
   wkv_chunk: 64
 
 train:

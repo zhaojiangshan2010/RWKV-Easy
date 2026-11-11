@@ -1,0 +1,78 @@
+# ============================================================
+# RWKV-7 LoRA 微调 + rwkv-fla（Triton 加速，推荐 CUDA 用户）
+#
+#   pip install rwkv-fla
+#   rwkv-easy train -c configs/lora_sharegpt_fla.yaml
+#
+# 与 lora_sharegpt.yaml 的唯一区别是 WKV 后端走 rwkv-fla 的融合内核：
+#   - 需要 CUDA / ROCm + Triton >= 3.2（torch >= 2.4）
+#   - 支持 clampw / softplus / exp 三种衰减口径
+#   - 首次 step 会编译 Triton 内核（约几十秒），之后走缓存
+#   - 建议保持 precision: bf16（内核内部按 bf16 累加）
+#
+# 实测（0.1B，ctx512 / bsz4 / bf16）：约 14K tok/s，
+# 同配置 native 约 3.9K tok/s；显存 4.4 GiB vs 5.8 GiB。
+# ============================================================
+
+run:
+  name: rwkv7-lora-fla
+  output_dir: runs
+  seed: 42
+
+model:
+  path: models/rwkv7-g1d-0.4b.pth      # ← 改成你的 RWKV-7 权重
+  decay: auto                          # auto 校准；官方权重通常选中 clampw
+  backend: fla                         # Triton 融合内核
+  wkv_chunk: 64
+
+train:
+  method: lora
+  infctx: false
+  ctx_len: 2048
+  chunk_ctx: 512                       # 仅 infctx 使用
+  micro_batch_size: 2
+  grad_accum: 8
+  epochs: 1
+  lr: 1.0e-4
+  min_lr: 1.0e-5
+  warmup_steps: 20
+  lr_schedule: cosine
+  weight_decay: 0.01
+  grad_clip: 1.0
+  precision: bf16                      # fla 建议 bf16
+  grad_checkpoint: true
+  log_every: 10
+  save_every_steps: 500
+  save_every_epochs: 1
+  keep_last: 2
+  merge_at_end: true
+
+lora:
+  rank: 16
+  alpha: 32
+  dropout: 0.0
+  target_modules:
+    - att.receptance
+    - att.key
+    - att.value
+    - att.output
+    - ffn.key
+    - ffn.value
+
+data:
+  path: data/sharegpt.json             # ← 改成你的 ShareGPT 数据集
+  mode: packed
+  template: rwkv_world
+  train_on: assistant
+  append_eos: end
+  val_ratio: 0.0
+  num_workers: 2
+  num_proc: 4
+
+dist:
+  mode: auto
+  num_gpus: auto
+
+log:
+  jsonl: true
+  wandb: false

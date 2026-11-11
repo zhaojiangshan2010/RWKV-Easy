@@ -282,15 +282,8 @@ class Config:
 
     def resolve(self) -> Config:
         """把依赖关系收敛成最终值（会原地修改少量字段并返回 self）。"""
-        # fla 后端要求 log-decay <= -0.5，只与 softplus 公式兼容。
-        if self.model.backend == "fla":
-            if self.model.decay == "auto":
-                self.model.decay = "softplus"
-            elif self.model.decay != "softplus":
-                raise ConfigError(
-                    "`model.backend: fla` 只支持 `model.decay: softplus`。\n"
-                    f"当前为 {self.model.decay!r}；请改成 softplus，或改用 `model.backend: native`。"
-                )
+        # fla 的 chunk 核接收 log-decay（走 `log_w`），clampw / softplus / exp
+        # 三种口径都满足 `log_decay <= 0`，不需要强制成 softplus。
         self.train.precision = normalize_precision(self.train.precision)
         return self
 
