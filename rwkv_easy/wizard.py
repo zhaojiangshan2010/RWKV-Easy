@@ -1658,8 +1658,8 @@ def _line_home(console: Console, state: WizardState, no_train: bool, output: str
             if path is None:
                 continue
             if result == "save" or no_train:
-                console.print("配置已保存。")
-                continue
+                console.pause("配置已保存。按回车退出…")
+                return "saved"
             return "train:" + str(path)
 
 
@@ -1727,10 +1727,9 @@ def _home(console: Console, state: WizardState, no_train: bool, output: str | No
             if path is None:
                 continue
             if result == "save" or no_train:
-                console.pause("配置已保存。按回车返回…")
-                continue
+                console.pause("配置已保存。按回车退出…")
+                return "saved"
             return "train:" + str(path)
-
 
 def _cycle_choice(state: WizardState, action: str, direction: int) -> None:
     cfg = state.cfg
@@ -1794,6 +1793,9 @@ def run_wizard(
         if result.startswith("train:"):
             path = Path(result.split(":", 1)[1])
             return _run_training(console, state, path)
+    if result == "saved":
+        print("\n配置已保存，未开始训练。")
+        return 0
     if result == "quit":
         print("\n已退出，未开始训练。")
         return 0
