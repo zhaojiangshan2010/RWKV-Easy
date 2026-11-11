@@ -617,6 +617,8 @@ _TEMPLATE_HEADER = """\
 #   3. train.method lora 或 state
 #
 # 其它参数保持默认即可。更多说明见 docs/CONFIG.md。
+# GPU 建议：precision: bf16-full、compile: true；装了 rwkv-fla 可把
+# model.backend 改成 fla。CPU / 调试必须用 precision: fp32。
 # 命令行临时覆盖：rwkv-easy train -c 本文件 --set train.lr=2e-4
 # ============================================================
 """
@@ -653,15 +655,17 @@ def template_config(
         f"  method: {method}",
         f"  infctx: {'true' if infctx else 'false'}",
         "  ctx_len: 2048",
-        "  chunk_ctx: 512                     # 仅 infctx 使用",
+        "  chunk_ctx: 2048                    # 仅 infctx 使用；显存 ∝ chunk_ctx",
         "  micro_batch_size: 2",
         "  grad_accum: 8",
         "  epochs: 1",
         "  lr: 1.0e-4",
         "  lr_schedule: cosine",
         "  warmup_steps: 20",
-        "  precision: bf16                    # fp32 / fp16 / bf16 / bf16-full（CPU 上必须 fp32）",
-        "  grad_checkpoint: true              # 显存不够就保持 true",
+        "  precision: bf16-full               # GPU 推荐；CPU 必须改 fp32",
+        "  grad_checkpoint: true              # infctx + per-chunk backward 后可关",
+        "  infctx_backward: true              # 每块立即反传，显存 ∝ chunk_ctx",
+        "  compile: false                     # CUDA 上建议 true；首次启动会编译",
         "  merge_at_end: true                 # 训练完自动导出完整权重",
         "",
     ]

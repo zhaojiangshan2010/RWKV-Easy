@@ -23,7 +23,7 @@ train:
   infctx: true
   ctx_len: 8192
   chunk_ctx: 2048
-  micro_batch_size: 1
+  micro_batch_size: 1                   # 0.1B/8K ctx 可加到 2（显存允许时）
   grad_accum: 16
   epochs: 1
   lr: 5.0e-3

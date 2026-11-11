@@ -30,7 +30,7 @@ train:
   infctx: false
   ctx_len: 2048
   chunk_ctx: 512                       # 仅 infctx 使用
-  micro_batch_size: 2
+  micro_batch_size: 2                  # 0.1B/ctx512 可加到 32（显存允许时）
   grad_accum: 8
   epochs: 1
   lr: 1.0e-4
