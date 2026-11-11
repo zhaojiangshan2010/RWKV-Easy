@@ -104,6 +104,9 @@ class TrainConfig:
     l2wrap: float = 1.0e-4
     # infctx 块之间是否截断梯度（推荐 true；false 显存需求成倍上升）。
     infctx_detach: bool = True
+    # infctx 每个 chunk 立即 backward（显存只与 chunk_ctx 有关）。
+    # 单进程训练默认启用；DDP/DeepSpeed 暂不支持，会自动走旧的延迟 backward。
+    infctx_backward: bool = True
     log_every: int = 10
     save_every_steps: int = 0
     save_every_epochs: int = 1

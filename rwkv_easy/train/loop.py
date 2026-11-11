@@ -297,21 +297,22 @@ class Trainer:
             logits.register_hook(_l2wrap_hook)
         return loss, count
 
-    def compute_loss(self, batch: dict[str, torch.Tensor]) -> tuple[torch.Tensor, int]:
+    def compute_loss(self, batch: dict[str, torch.Tensor]) -> tuple[torch.Tensor, int, bool]:
         input_ids = batch["input_ids"]
         labels = batch["labels"]
         attention_mask = batch.get("attention_mask")
         if self.cfg.train.infctx:
             return self._infctx_loss(input_ids, labels, attention_mask)
         logits, _ = self.model(input_ids, attention_mask=attention_mask, need_state=False)
-        return self._cross_entropy(logits, labels)
+        loss, count = self._cross_entropy(logits, labels)
+        return loss, count, False
 
     def _infctx_loss(
         self,
         input_ids: torch.Tensor,
         labels: torch.Tensor,
         attention_mask: torch.Tensor | None,
-    ) -> tuple[torch.Tensor, int]:
+    ) -> tuple[torch.Tensor, int, bool]:
         cfg = self.cfg.train
         chunk = int(cfg.chunk_ctx)
         batch_size, total = input_ids.shape
@@ -323,8 +324,21 @@ class Trainer:
             dtype=self.model.emb.weight.dtype,
         )
 
+        # 单进程且开启 infctx_backward 时，每个 chunk 立即反传：
+        # 激活只保留当前块，显存与 ctx_len 无关（真正的 O(chunk_ctx)）。
+        # DDP/DeepSpeed 需要特殊的梯度同步，暂走旧的“最后统一 backward”路径。
+        per_chunk_backward = (
+            self.model.training
+            and cfg.infctx_backward
+            and cfg.infctx_detach
+            and getattr(self.backend, "kind", "single") == "single"
+        )
+        total_tokens = int((labels != IGNORE_INDEX).sum().item()) if per_chunk_backward else 0
+        if per_chunk_backward and total_tokens == 0:
+            return input_ids.float().sum() * 0.0, 0, False
+
         total_loss: torch.Tensor | None = None
-        total_tokens = 0
+        weighted_loss = torch.zeros((), device=input_ids.device, dtype=torch.float32)
         for start in range(0, total, chunk):
             end = min(start + chunk, total)
             chunk_ids = input_ids[:, start:end]
@@ -348,19 +362,32 @@ class Trainer:
                 )
 
             chunk_loss, chunk_tokens = self._cross_entropy(logits, chunk_labels)
-            if chunk_tokens > 0:
+            if per_chunk_backward:
+                if chunk_tokens > 0:
+                    weight = chunk_tokens / total_tokens
+                    # grad_accum 的缩放由这里负责，外层不再 backward。
+                    contribution = chunk_loss * weight / self.grad_accum
+                    # State Tuning 的后续块可能没有任何可训练输入（time_state
+                    # 只在第一块作为初始状态），此时没有梯度可反传。
+                    if contribution.requires_grad:
+                        self.backend.backward(contribution)
+                    weighted_loss = weighted_loss + chunk_loss.detach() * weight
+            elif chunk_tokens > 0:
                 total_loss = chunk_loss * chunk_tokens if total_loss is None else total_loss + chunk_loss * chunk_tokens
-                total_tokens += chunk_tokens
 
             if cfg.infctx_detach:
                 state = ModelState(shift_att.detach(), shift_ffn.detach(), wkv.detach())
             else:
                 state = ModelState(shift_att, shift_ffn, wkv)
 
+        if per_chunk_backward:
+            return weighted_loss, total_tokens, True
         if total_loss is None:
             # 整段都没有可训练 token：返回一个可反传的 0，避免训练崩溃。
-            return input_ids.float().sum() * 0.0, 0
-        return total_loss / total_tokens, total_tokens
+            return input_ids.float().sum() * 0.0, 0, False
+        # 旧路径：total_loss 是 sum，除以有效 token 数得到整段的 mean。
+        counts = int((labels != IGNORE_INDEX).sum().item())
+        return total_loss / max(1, counts), counts, False
 
     # ------------------------------------------------------------------ #
     # 训练
@@ -406,9 +433,10 @@ class Trainer:
                 batch = _move_batch(batch, self.device)
                 with self.backend.sync_context(micro_in_group):
                     with autocast_context(self.precision, self.device):
-                        loss, token_count = self.compute_loss(batch)
-                    scaled = loss / self.grad_accum
-                    self.backend.backward(scaled)
+                        loss, token_count, backward_done = self.compute_loss(batch)
+                    if not backward_done and token_count > 0:
+                        scaled = loss / self.grad_accum
+                        self.backend.backward(scaled)
 
                 micro_in_group += 1
                 self._tokens_processed += int(batch["input_ids"].numel())
@@ -730,7 +758,7 @@ class Trainer:
         for batch in self.val_loader:
             batch = _move_batch(batch, self.device)
             with autocast_context(self.precision, self.device):
-                loss, count = self.compute_loss(batch)
+                loss, count, _ = self.compute_loss(batch)
             if count > 0:
                 total_loss += float(loss.detach()) * count
                 total_tokens += count
