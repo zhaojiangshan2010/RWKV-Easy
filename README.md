@@ -15,9 +15,10 @@
 | 范围 | 状态 |
 |---|---|
 | 数学正确性（WKV 前向/梯度、infctx 等价性、LoRA 合并） | ✅ CPU 上与 float64 参考对照，误差 < 1e-5；fla 与 fp64 相对误差 ~3e-3（bf16 内核） |
-| 数据管线（ShareGPT、completion-only mask、packed/sample） | ✅ 110 个测试覆盖（其中 5 个 fla 测试需要 CUDA） |
+| 数据管线（ShareGPT、completion-only mask、packed/sample） | ✅ 121 个测试覆盖（其中 5 个 fla 测试需要 CUDA） |
 | 端到端（训练、断点、合并、重载、bf16、2 进程 DDP） | ✅ CPU 上验证通过 |
 | 真实 RWKV-7 权重 | ✅ `rwkv7-g1d-0.1b` 在 CPU 与 GPU 上都已验收：decay=clampw，NLL 2.54，续写连贯 |
+| 一键安装 / 交互式配置 | ✅ `quickstart.py`：检测 CUDA → 装对应 PyTorch → 向导选 LoRA/State/infctx → 训练 |
 | GPU 训练（LoRA / State / infctx / fp16 / DeepSpeed） | ✅ 24GB Ampere 级 GPU 全跑通，数字见 [`docs/GPU_VERIFICATION.md`](docs/GPU_VERIFICATION.md) |
 | rwkv-fla（Triton 后端） | ✅ torch 2.14 + CUDA 13 + triton 3.8 实测通过；支持 clampw / softplus / exp，0.1B 最高 **48.5K tok/s**（LoRA + compile）/ **56.3K**（State） |
 | infctx 显存 | ✅ 每块即时反传，显存 ∝ `chunk_ctx`；0.1B 在 24GB 卡上可训 **32K 上下文（3.4 GiB）** |
@@ -27,9 +28,38 @@
 
 ---
 
+## 一键向导（新手推荐）
+
+不想看文档？在项目根目录运行：
+
+```bash
+python quickstart.py
+```
+
+Windows 双击 `quickstart.bat`，Linux/macOS 也可以 `bash quickstart.sh`。
+
+它会自动：
+
+1. 检测 NVIDIA 驱动和 CUDA 版本；
+2. 需要时创建 `.venv`，按 CUDA 版本安装对应 PyTorch；
+3. 安装本项目（CUDA 上可选装 rwkv-fla）；
+4. 进入方向键交互界面：
+   - `←/→` 选择 LoRA / State、是否 infctx、后端、精度；
+   - `Enter` 选择模型/数据集（自动检测候选文件，也可手动输入路径）；
+   - `空格` 勾选 LoRA 模块和 block 层；
+   - “高级设置”里可以修改**所有**配置字段；
+5. 自动保存 YAML 并直接开始训练。
+
+常用参数：`--cpu` 强制 CPU、`--skip-install` 跳过安装、`--no-train` 只生成配置、
+`--non-interactive` 分行问答（无 TTY/脚本）。详见
+[`docs/WIZARD.md`](docs/WIZARD.md)。
+
+---
+
 ## 目录
 
 - [为什么需要它](#为什么需要它)
+- [一键向导（新手推荐）](#一键向导新手推荐)
 - [5 分钟上手](#5-分钟上手)
 - [本机 CPU 验证](#本机-cpu-验证不需要-gpu)
 - [拿到模型后的验收](#拿到模型后的验收)
@@ -93,6 +123,8 @@ install.bat
 
 脚本会自动：创建 `.venv` → 安装 PyTorch（有 N 卡就装 CUDA 版）→ 安装本项目 →
 运行 `doctor` 环境检查 → 跑一遍 CPU 自检。
+
+> 想连配置一起做：直接 `python quickstart.py`（见上一节「一键向导」）。
 
 > 驱动比较旧装不上 CUDA 版？用 `TORCH_INDEX` 指定：
 > ```bash
@@ -224,7 +256,7 @@ python -m rwkv_easy train -c configs/my-lora-run.yaml --resume runs/xxx
 WKV 算子是纯 PyTorch 写的，所以整条链路都能在 CPU 上验证。三条命令：
 
 ```bash
-python -m pytest tests -q                      # 110 个（CPU 上 105 passed + 5 fla skipped）
+python -m pytest tests -q                      # 121 个（CPU 上 116 passed + 5 fla skipped）
 python -m rwkv_easy selftest --full            # lora/state × infctx on/off × fp32/bf16
 python -m rwkv_easy train -c configs/debug_cpu.yaml   # 随机小模型，20 步
 ```
@@ -337,6 +369,7 @@ configs/self_identity_lora.yaml       # CPU 过拟合 demo
 
 ```bash
 rwkv-easy init          生成配置（交互式向导）
+rwkv-easy wizard        一键交互式配置并训练（新手推荐）
 rwkv-easy inspect-data  检查数据与 loss mask
 rwkv-easy check-model   验收一个 RWKV-7 权重（格式/架构/decay/出字）
 rwkv-easy train         开始 / 继续训练
@@ -631,11 +664,13 @@ chunk2048 / bsz2 开 GC 约 23.7K tok/s、3.9 GiB；关掉约 34.6K、3.4 GiB。
 
 ```
 RWKV-EASY/
+├── quickstart.py / .sh / .bat   # 安装 + 交互式向导（新手入口）
 ├── rwkv_easy/
 │   ├── cli.py              # 所有命令
+│   ├── wizard.py           # 跨平台交互式配置向导
 │   ├── config.py           # YAML 配置 + 校验
 │   ├── launcher.py         # 多进程启动
-│   ├── lora.py             # 自研 LoRA
+│   ├── lora.py             # 自研 LoRA（支持按模块/按层）
 │   ├── state_tuning.py     # State Tuning
 │   ├── backends/           # WKV 算子（native / reference / fla）
 │   ├── models/             # RWKV-7 模型与 checkpoint 加载
@@ -644,7 +679,7 @@ RWKV-EASY/
 │   └── assets/             # 内置词表、校准文本、示例数据
 ├── configs/                # 配置模板（含自我认知过拟合 demo）
 ├── docs/                   # 详细文档
-├── tests/                  # 110 个测试（CPU 上跳过 5 个 fla）
+├── tests/                  # 121 个测试（CPU 上跳过 5 个 fla）
 ├── examples/               # 示例数据（ShareGPT、自我认知实验数据）
 ├── CHANGELOG.md
 ├── install.sh / .bat / .ps1
@@ -659,7 +694,7 @@ RWKV-EASY/
 
 | 我想…… | 看 |
 |---|---|
-| 第一次跑通 | 本文的「5 分钟上手」 |
+| 第一次跑通 / 懒人一键 | 本文「一键向导」、[`docs/WIZARD.md`](docs/WIZARD.md) |
 | 验收一份新权重 | [`docs/MODEL_CHECK.md`](docs/MODEL_CHECK.md) |
 | 调超参 / 查字段含义 | [`docs/CONFIG.md`](docs/CONFIG.md) |
 | 搞清数据格式与 mask | [`docs/DATASET.md`](docs/DATASET.md) |
@@ -674,7 +709,7 @@ RWKV-EASY/
 
 ```bash
 pip install -e ".[dev]"
-python -m pytest tests -q            # 110 个（CPU 上跳过 5 个 fla）
+python -m pytest tests -q            # 121 个（CPU 上跳过 5 个 fla）
 python -m rwkv_easy selftest --full  # 8 种组合
 python -m ruff check rwkv_easy tests
 ```

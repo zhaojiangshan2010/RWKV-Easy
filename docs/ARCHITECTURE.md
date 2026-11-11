@@ -217,6 +217,13 @@ y = base(x) + dropout(x) A^T B^T * (alpha/r)
 
 `B` 零初始化 → 训练开始时与基座完全一致。
 
+`inject_lora` 支持两级过滤：
+
+- `target_modules`：模块名后缀（att / ffn）；
+- `target_layers`：只注入 `blocks.<i>.` 中指定下标的 block；`None` 表示全部。
+
+交互式向导（`rwkv_easy/wizard.py`）用空格多选写入这两个字段。
+
 ## 6. State Tuning
 
 每层 attention 增加一个参数：

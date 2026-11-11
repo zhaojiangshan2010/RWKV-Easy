@@ -51,8 +51,9 @@ pip install -e .
 | 13 | infctx 每块反传 == 延迟反传 | `tests/test_infctx_backward.py` | loss 与全部梯度一致 | 4 组（lora/state × gc on/off）通过 |
 | 14 | 只对可训练 token 过 head | `tests/test_head_selection.py` | loss/梯度与整段 logits 等价 | 通过 |
 | 15 | L2Wrap 原地梯度 | `tests/test_l2wrap.py` | 与旧实现梯度逐元素一致 | 通过 |
+| 16 | 一键向导逻辑 | `tests/test_wizard.py` | CUDA 映射、默认值、路径校验、配置保存 | 通过 |
 
-全套 110 个测试，CPU 上 105 passed + 5 skipped（fla 组需要 CUDA），
+全套 121 个测试，CPU 上 116 passed + 5 skipped（fla 组需要 CUDA），
 约 3–6 分钟（bf16-full 在 CPU 上较慢）。
 
 ---
@@ -134,7 +135,7 @@ pip install -e .
 环境：Windows 10、Python 3.11.9、torch 2.15.0+cpu、无 GPU。
 
 ```
-pytest tests -q                                  -> 105 passed, 5 skipped（fla 组）
+pytest tests -q                                  -> 116 passed, 5 skipped（fla 组）
 rwkv-easy selftest --full --steps 8              -> 自检通过（8/8 组合）
 configs/debug_cpu.yaml（20 步）                  -> loss 11.2995 -> 11.1975
 state 长跑（200 步，lr 5e-2）                    -> loss 11.2833 -> 10.9647

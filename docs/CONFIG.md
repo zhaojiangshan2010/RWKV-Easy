@@ -128,6 +128,7 @@ rwkv-easy train -c configs/lora.yaml --set train.lr=2e-4 --set data.val_ratio=0.
 | `alpha` | int | `32` | 缩放系数，有效 scale = `alpha / rank` |
 | `dropout` | float | `0.0` | LoRA 分支的 dropout |
 | `target_modules` | list[str] | 6 个后缀 | 按**模块名后缀**匹配 |
+| `target_layers` | list[int] \| null | `null` | 只训练这些 block（0-based）；`null` = 所有层 |
 | `target_regex` | str \| null | `null` | 额外用正则匹配（与上者取并集） |
 
 默认目标：
@@ -147,6 +148,14 @@ target_modules:
 ```yaml
 target_modules: [att.receptance, att.key, att.value, att.output]
 ```
+
+只训练前 6 个 block（0-based）：
+
+```yaml
+target_layers: [0, 1, 2, 3, 4, 5]
+```
+
+交互式向导里可以按空格直接勾选模块与 block。
 
 注入后基座**全部冻结**（包括 embedding、head、norm），只有 LoRA 的 A/B 可训练。
 

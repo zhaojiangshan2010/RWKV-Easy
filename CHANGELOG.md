@@ -1,5 +1,32 @@
 # 变更记录
 
+## 0.3.0 — 2026-11-12
+
+一键安装 + 交互式配置向导，并支持按 block 选择 LoRA 层。
+
+### 新增
+
+- **`quickstart.py` / `quickstart.sh` / `quickstart.bat`**：安装与训练合一。
+  检测 NVIDIA 驱动 / CUDA 版本，自动创建 `.venv`、安装对应 PyTorch、
+  安装项目与可选 rwkv-fla，然后进入向导并直接训练。
+- **`rwkv-easy wizard`**：跨平台方向键 TUI（Windows `msvcrt`、Unix `termios`，
+  无第三方依赖）。支持：
+  - `←/→` 切换 LoRA / State、infctx、后端、精度；
+  - 自动扫描并校验模型 / 数据集路径，也可手动输入；
+  - `空格` 多选 LoRA 模块与 block 层；
+  - 高级设置覆盖全部 Config 字段；
+  - 摘要检查、保存 YAML、直接启动训练；
+  - 无 TTY 时自动退化为分行问答（`--non-interactive`）。
+- **LoRA `target_layers`**：只注入指定 block（`blocks.<i>.`），向导可按空格
+  勾选；`null` 表示全部层。
+- 新增 `tests/test_wizard.py`，测试总数 **121**。
+
+### 文档
+
+- 新增 [`docs/WIZARD.md`](docs/WIZARD.md)：按键、流程、默认值、非交互用法与排错。
+- README 增加「一键向导」入口，配置/结构/命令表同步；
+- `CONFIG.md` 增加 `lora.target_layers`。
+
 ## 0.2.0 — 2026-11-12
 
 性能与 infctx 架构升级：0.1B 在 24GB 卡上的整段 LoRA 从 13.7–16.1K 提升到
