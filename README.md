@@ -38,6 +38,7 @@
 - [数据集格式](#数据集格式)
 - [显存与参数建议](#显存与参数建议)
 - [性能调优指南](docs/PERFORMANCE.md)
+- [与 RWKV-PEFT 的 LoRA 对比](#与-rwkv-peft-的-lora-对比)
 - [常见问题](#常见问题)
 - [项目结构](#项目结构)
 - [进一步阅读](#进一步阅读)
@@ -546,6 +547,50 @@ tok/s 不能直接比较。上面的 fla/native 行已经尽量固定其它变�
 `grad_checkpoint` 是内存与速度的交换：infctx + per-chunk backward 下，8K ctx /
 chunk2048 / bsz2 开 GC 约 23.7K tok/s、3.9 GiB；关掉约 34.6K、3.4 GiB。
 显存充足时优先关掉；7B 级模型再按显存打开。
+
+---
+
+## 与 RWKV-PEFT 的 LoRA 对比
+
+在同一台 24GB GPU、同一个 0.1B 权重上，用同一份 600-token 长文本
+（截断到 512）、同样的 LoRA 配置跑了几步：
+
+- LoRA：`r=8, alpha=32, dropout=0`，`att.receptance/key/value/output` +
+  `ffn.key/value` 共 **6 个模块/层，1.327M 可训练参数**（两边完全一致）
+- `ctx_len=512`，单卡，`bf16-true`（PEFT）/ `bf16-full`（EASY）
+- PEFT：Lightning `strategy auto` + 它的 CUDA WKV kernel，6 步/组
+- EASY：fla Triton 后端 + `torch.compile`，12 步/组
+- 取稳定 step 的 tok/s，排除首次 kernel 编译
+
+![RWKV-EASY vs RWKV-PEFT LoRA throughput](docs/assets/peft_vs_easy.svg)
+
+| grad_checkpoint | micro_batch_size | RWKV-EASY | RWKV-PEFT |
+|---|---|---|---|
+| on（PEFT 默认） | 1 | 2.86K tok/s | **3.82K tok/s** |
+| on | 8 | 22.9K | **25.3K** |
+| on | 16 | 27.3K | **29.3K** |
+| on | 32 | 28.8K | **31.3K** |
+| off | 8 | **37.0K** | 34.1K |
+| off | 16 | **41.0K** | 38.5K |
+| off | 32 | **44.2K** | 40.9K |
+
+结论：
+
+- **开梯度检查点时 PEFT 更快**（约 7–34%）：它的 CUDA kernel + 检查点实现
+  在每步固定开销上更小，batch=1 时尤其明显；
+- **关梯度检查点、batch≥8 时 RWKV-EASY 更快**（约 6–9%）：
+  fla 融合内核 + `torch.compile` + 只对可训练 token 过 head 的组合更适合
+  大 batch；
+- 两边各自的**最佳配置**：RWKV-EASY 44.2K（bsz32/no-GC） vs
+  RWKV-PEFT 40.9K（bsz32/no-GC），EASY 约快 **8%**；
+- PEFT 的默认 `scripts/lora.sh` 是 bsz1 + `grad_cp=1` + DeepSpeed stage1，
+  对应 3.8K 量级；EASY 同 bsz1/GC 是 2.9K，但 EASY 的推荐工作点在
+  大 batch/no-GC（44K），两者适用场景不同。
+
+> 公平性说明：PEFT 的 `--precision bf16`（autocast）会因 a/b 被提升成 fp32
+> 触发 CUDA 内核断言，所以用了等价的 `bf16-true`；为了隔离单卡框架差异，
+> PEFT 用了 `strategy auto`（未启用其默认 DeepSpeed stage1）；首次 CUDA
+> 内核编译时间已排除。PEFT bsz1/no-GC 未测。
 
 ---
 

@@ -247,3 +247,26 @@ rwkv-easy train -c configs/lora_sharegpt.yaml \
 # 全量测试（GPU 上会额外跑 5 个 fla 对照）
 python -m pytest tests -o addopts="" -q
 ```
+
+---
+
+## 7. 与 RWKV-PEFT 的 LoRA 对比
+
+同机、同 0.1B 权重、同一份 600-token 文本（截断到 512）、同样 LoRA
+（r=8, alpha=32, dropout=0, 6 模块/层 = 1.327M 可训练参数）：
+
+| grad_checkpoint | micro_batch_size | RWKV-EASY | RWKV-PEFT |
+|---|---|---|---|
+| on | 1 | 2.86K tok/s | **3.82K tok/s** |
+| on | 8 | 22.9K | **25.3K** |
+| on | 16 | 27.3K | **29.3K** |
+| on | 32 | 28.8K | **31.3K** |
+| off | 8 | **37.0K** | 34.1K |
+| off | 16 | **41.0K** | 38.5K |
+| off | 32 | **44.2K** | 40.9K |
+
+- PEFT 用 Lightning `strategy auto` + CUDA WKV kernel、`bf16-true`，6 步/组；
+  EASY 用 fla + compile、`bf16-full`，12 步/组；均取稳定 step，排除首次编译。
+- GC on：PEFT 快 7–34%；GC off + bsz≥8：EASY 快 6–9%。
+- 最佳配置：EASY 44.2K（bsz32/no-GC） vs PEFT 40.9K（bsz32/no-GC）。
+- 图表与完整公平性说明见 README 的「与 RWKV-PEFT 的 LoRA 对比」。
