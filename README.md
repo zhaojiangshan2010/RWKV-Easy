@@ -484,6 +484,19 @@ GPU（24GB Ampere 级，0.1B，bf16）：
 4. `precision: bf16-full`（参数本身用 bf16）
 5. 多卡 + DDP / DeepSpeed
 
+### 性能调优（三个旋钮）
+
+0.1B 这类小模型在 GPU 上是**算子启动开销受限**，不是算力受限。按收益排序：
+
+| 旋钮 | 建议 | 实测效果（0.1B, ctx512, bsz4） |
+|---|---|---|
+| `micro_batch_size` | 显存允许就加大 | bsz 1→8：单步 365→378ms，吞吐 1.4K→10.8K tok/s |
+| `model.wkv_chunk` | 96（native 后端上限） | 365→307 ms/step |
+| `train.compile` | `true`（首次启动慢） | 365→277 ms/step；与 chunk96 叠加 262ms/7.8K tok/s |
+
+`grad_checkpoint` 是内存与速度的交换：infctx 下开启约 700 tok/s、3.7GiB；
+关闭约 1.2K tok/s、11.4GiB。模型越大，上面的固定开销占比越低。
+
 ---
 
 ## 常见问题
@@ -547,15 +560,18 @@ RWKV-EASY/
 
 ## 进一步阅读
 
-- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)：数据流、WKV 数学、infctx 与状态传递
-- [`docs/CONFIG.md`](docs/CONFIG.md)：每一个配置项的含义
-- [`docs/DATASET.md`](docs/DATASET.md)：ShareGPT、模板、completion-only mask、packed vs sample
-- [`docs/CPU_VERIFICATION.md`](docs/CPU_VERIFICATION.md)：CPU 能验证什么、怎么复现、实测数字
-- [`docs/MODEL_CHECK.md`](docs/MODEL_CHECK.md)：新权重 5 分钟验收清单与异常对照
-- [`docs/GPU_VERIFICATION.md`](docs/GPU_VERIFICATION.md)：GPU 实测数字、瓶颈分析与 rwkv-fla 兼容性
-- [`docs/EXTENDING.md`](docs/EXTENDING.md)：接入自定义 WKV 内核（CUDA/Triton/ROCm）、新模型版本、新数据格式
-- [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md)：报错对照表
-- [`CHANGELOG.md`](CHANGELOG.md)：版本与本次验证/修复记录
+按需求找文档：
+
+| 我想…… | 看 |
+|---|---|
+| 第一次跑通 | 本文的「5 分钟上手」 |
+| 验收一份新权重 | [`docs/MODEL_CHECK.md`](docs/MODEL_CHECK.md) |
+| 调超参 / 查字段含义 | [`docs/CONFIG.md`](docs/CONFIG.md) |
+| 搞清数据格式与 mask | [`docs/DATASET.md`](docs/DATASET.md) |
+| 解决报错 | [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md) |
+| 看性能数字与瓶颈 | [`docs/GPU_VERIFICATION.md`](docs/GPU_VERIFICATION.md)、[`docs/CPU_VERIFICATION.md`](docs/CPU_VERIFICATION.md) |
+| 改代码 / 加后端 / 加模型版本 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)、[`docs/EXTENDING.md`](docs/EXTENDING.md) |
+| 看版本与修复记录 | [`CHANGELOG.md`](CHANGELOG.md) |
 
 ---
 

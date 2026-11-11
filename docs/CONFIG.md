@@ -194,6 +194,19 @@ target_modules: [att.receptance, att.key, att.value, att.output]
 | `wandb_run` | str \| null | `null` | 预留 |
 | `level` | str | `info` | 日志级别 |
 
+## 性能相关字段
+
+| 字段 | 方向 | 说明 |
+|---|---|---|
+| `train.micro_batch_size` | 吞吐 ↑ / 显存 ↑ | 小模型优先加大；0.1B 从 bsz1→8 吞吐可涨 7 倍 |
+| `train.grad_accum` | 显存 ↓ / 速度 ≈ | 总 batch = micro × accum × GPU 数；只影响更新频率 |
+| `model.wkv_chunk` | 速度 ↑ / 精度略降 | 64 默认，96 是 native 后端上限（更大值会被夹到 96） |
+| `train.compile` | 速度 ↑ / 首次启动慢 | `torch.compile`，小模型约 +30%；Windows 首次编译较慢 |
+| `train.grad_checkpoint` | 显存 ↓ / 速度 ↓ | infctx 下建议开；显存充足时可关（约快 1.7 倍，显存 ×3） |
+| `train.precision` | 显存 / 速度 | GPU 用 `bf16`；CPU 必须 `fp32`（bf16 反传慢约 75 倍） |
+| `train.chunk_ctx` | 显存 ↓ / 速度 ↓ | infctx 的显存单位，越小越省显存也越慢 |
+| `dist.mode: deepspeed` | 显存 ↓ | ZeRO 分片；单卡也能用，多卡节省优化器状态 |
+
 ## 完整示例
 
 见 `configs/` 目录下的六个模板，每个字段都有中文注释。

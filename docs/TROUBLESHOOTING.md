@@ -94,11 +94,20 @@ infctx 下把 `chunk_ctx` 从 512 降到 256。
 CPU 上请一律用 `precision: fp32`。
 
 **GPU 上比预期慢**
-- 确认 `model.backend: native` 时可以在 CUDA 上用 `torch.backends.cuda.matmul.allow_tf32`
-  （默认已开启）；想要更快可以装 `rwkv-fla` 并设 `model.backend: fla`
-  （要求 `decay: softplus`）；
+- 先看模型规模：0.1B 这类小模型是**算子启动开销受限**，不是算力受限。
+  实测 bsz1→8 单步只从 365ms 涨到 378ms，吞吐却从 1.4K 涨到 10.8K tok/s
+  ——优先加大 `micro_batch_size`；
+- `model.wkv_chunk: 96`（native 后端上限）可减少分块数；
+- `train.compile: true` 可以融合大量 elementwise 算子（小模型约 +30%）；
 - `chunk_ctx` 太小会让分块串行开销占比变高，显存允许时适当增大；
-- `micro_batch_size` 太小会导致 GPU 利用率不足，配合 `grad_accum` 调大。
+- 想要 Triton 内核需要 `rwkv-fla` + 新版 torch/triton，见下面的安装说明。
+
+**`nvidia-smi` 显示 `SMI N/A` / `Driver Version: N/A`**
+虚拟化 GPU 上常见。以 PyTorch 的查询为准：
+
+```bash
+python -c "import torch; print(torch.cuda.get_device_name(0), torch.cuda.get_device_properties(0))"
+```
 
 **第一次启动很慢**
 `decay: auto` 要做 3 次 256 token 的前向（约几秒到几十秒），结果会缓存。

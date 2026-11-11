@@ -66,8 +66,17 @@ rwkv-fla 0.7.20250822（已安装但与当前 torch/triton 不兼容，见第 4 
 > `wkv_chunk` 超过 96 会被 native 后端夹到 96；更大的块在 fp32 下反归一化因子
 > 会接近溢出。bf16 下不同块长的 logits 可能差 2 个 ulp，属正常。
 
-**建议**：0.1B 这种小模型优先增大 `micro_batch_size`（吞吐线性增长到 bsz 8 左右），
-其次 `wkv_chunk: 96` + `compile: true`；1.5B 以上按显存正常调 batch 即可。
+**建议**
+
+| 场景 | 配置 |
+|---|---|
+| 0.1B / 0.4B | `micro_batch_size` 尽量大（0.1B 可到 8+）+ `wkv_chunk: 96` + `compile: true` |
+| 1.5B / 3B | 按显存定 batch（bsz 2–8），`wkv_chunk: 64`，`grad_checkpoint: true` |
+| 7B | `bf16-full` + `chunk_ctx 256–512` + DDP/ZeRO-2，`compile` 可选 |
+| 长上下文 | `infctx: true` + `chunk_ctx: 512`；显存充足时关 `grad_checkpoint` 可快约 1.7 倍 |
+
+0.1B 优先增大 batch（吞吐线性增长到 bsz 8 左右），其次 `wkv_chunk: 96` +
+`compile: true`；1.5B 以上按显存正常调 batch 即可。
 
 ---
 

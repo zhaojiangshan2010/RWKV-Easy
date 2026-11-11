@@ -267,6 +267,15 @@ WKV 内部始终 fp32。LoRA 的 A/B 在 `bf16-full` 下仍然保持 fp32，
 c10d rendezvous 在部分 Windows / 精简 PyTorch 上的 `libuv` 问题；用户自己用
 `torchrun` 启动也完全兼容（代码读的是同一套环境变量）。
 
+DeepSpeed 的两个额外处理：
+
+- **单进程**（没有 torchrun）时 DS 没有进程组，会去探测 MPI 并报
+  `No module named 'mpi4py'`。`deepspeed_backend.py` 会先建一个 world_size=1
+  的 PG，并设置 `LOCAL_RANK/RANK/WORLD_SIZE`。
+- **梯度累积由主循环负责**，所以 DS 侧 `gradient_accumulation_steps=1`，
+  `train_batch_size = micro * world_size`（不乘 accum），否则 DS 的
+  batch 一致性校验会失败。
+
 ## 10. 关键不变量（改代码时请保持）
 
 1. `ModelState` 的三个张量形状固定：`(L,B,C)`、`(L,B,C)`、`(L,B,H,K,K)`。
@@ -282,3 +291,20 @@ c10d rendezvous 在部分 Windows / 精简 PyTorch 上的 `libuv` 问题；用�
    会跑偏。`tests/test_dataset.py` 对 rwkv_world / chatml 都有断言。
 8. 模型加载后必须按目标精度显式转换（含 fp32 上转），不要只在
    `dtype != fp32` 时转换。
+
+## 11. 性能画像
+
+实测（0.1B，24GB Ampere 级 GPU，ctx512/bsz4）单步约 365ms，但 GPU kernel
+只占 ~100ms，其余是数百个小算子的启动空档。profile 里最大项是 elementwise
+（~44ms）、fp32 SGEMM（~34ms，WKV 后端）、DtoD copy（~10ms）。
+
+因此：
+
+- **batch 增大几乎不增加单步时间**（bsz1 365ms → bsz8 378ms），吞吐线性涨；
+- `wkv_chunk` 从 64 提到 96（native 上限）减少分块数：365→307ms；
+- `torch.compile` 融合大量 elementwise：365→277ms；
+- 两者叠加：262ms/step。
+
+native 后端在 clampw 模式下关闭了动态二分（`dynamic_split=False`），避免
+每个分块一次 `.item()` 的 GPU 同步；softplus/exp 模式仍保留动态切分。
+详细数字与 fla 兼容性见 [`GPU_VERIFICATION.md`](GPU_VERIFICATION.md)。

@@ -192,6 +192,41 @@ tokenize 结果会缓存为 `tokens-<hash>.pkl`，放在：
 
 首次 tokenize 之后，再次启动会打印「命中 tokenize 缓存」，几秒即可开始训练。
 
+## 从常见格式转换
+
+**Alpaca / 两列指令 → ShareGPT**
+
+```python
+import json
+
+rows = json.load(open("alpaca.json", encoding="utf-8"))
+out = []
+for r in rows:
+    prompt = r["instruction"] + ("\n" + r["input"] if r.get("input") else "")
+    out.append({"conversations": [
+        {"from": "human", "value": prompt},
+        {"from": "gpt", "value": r["output"]},
+    ]})
+json.dump(out, open("sharegpt.json", "w", encoding="utf-8"), ensure_ascii=False)
+```
+
+**HuggingFace datasets（parquet / arrow）**
+
+```python
+from datasets import load_dataset
+
+ds = load_dataset("parquet", data_files="train.parquet", split="train")
+# 列名已经是 messages 时可以直接导出；否则先 map 成 conversations
+ds.to_json("sharegpt.jsonl", lines=True, force_ascii=False)
+```
+
+**大型语料（继续预训练）**
+
+直接放一个 `.txt`，或者每行 `{"text": "..."}` 的 `.jsonl`，配 `format: text`：
+整段内容都会参与训练（不做 completion mask）。
+
+> 转换后先跑一次 `rwkv-easy inspect-data`，确认识别到的字段与 mask 符合预期。
+
 ## 常见坑
 
 **1. 数据里没有 assistant 回复**
