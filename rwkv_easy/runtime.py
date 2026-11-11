@@ -361,6 +361,13 @@ def iter_trainable(module: torch.nn.Module) -> Iterator[tuple[str, torch.nn.Para
             yield name, param
 
 
+def make_grad_scaler(device: torch.device):
+    """fp16 的 GradScaler，兼容 torch 2.2（没有 ``torch.amp.GradScaler``）。"""
+    if hasattr(torch.amp, "GradScaler"):
+        return torch.amp.GradScaler(device.type)
+    return torch.cuda.amp.GradScaler(enabled=True)  # pragma: no cover - torch < 2.3
+
+
 def peak_memory_gib(device: torch.device) -> float:
     if device.type != "cuda":
         return 0.0

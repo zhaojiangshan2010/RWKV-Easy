@@ -48,8 +48,14 @@ class LoRALinear(nn.Module):
 
         in_features = base.in_features
         out_features = base.out_features
-        self.lora_A = nn.Parameter(torch.empty(rank, in_features, dtype=torch.float32))
-        self.lora_B = nn.Parameter(torch.zeros(out_features, rank, dtype=torch.float32))
+        # 跟随基座所在设备：允许在 model.to(device) 之后注入。
+        device = base.weight.device
+        self.lora_A = nn.Parameter(
+            torch.empty(rank, in_features, dtype=torch.float32, device=device)
+        )
+        self.lora_B = nn.Parameter(
+            torch.zeros(out_features, rank, dtype=torch.float32, device=device)
+        )
         # 标准 LoRA 初始化：A 随机、B 为零。
         nn.init.kaiming_uniform_(self.lora_A, a=math.sqrt(5))
         self.rank = int(rank)
@@ -63,8 +69,9 @@ class LoRALinear(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         base_out = self.base(x)
-        A = self.lora_A.to(x.dtype)
-        B = self.lora_B.to(x.dtype)
+        # 同时对齐 device 和 dtype：fp32 参数在 bf16/fp16 输入下会走这条路径。
+        A = self.lora_A.to(device=x.device, dtype=x.dtype)
+        B = self.lora_B.to(device=x.device, dtype=x.dtype)
         delta = self.dropout(x) @ A.transpose(0, 1)
         delta = delta @ B.transpose(0, 1)
         return base_out + delta * self.scaling

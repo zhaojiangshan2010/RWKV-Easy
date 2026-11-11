@@ -28,7 +28,6 @@ def build_deepspeed_config(cfg: Any, world_size: int) -> dict[str, Any]:
     """由统一的 YAML 配置生成 DeepSpeed JSON（纯函数，便于单测）。"""
     ds = cfg.dist.deepspeed
     micro = int(cfg.train.micro_batch_size)
-    accum = int(cfg.train.grad_accum)
     stage = int(ds.zero_stage)
 
     zero: dict[str, Any] = {"stage": stage}
@@ -49,7 +48,10 @@ def build_deepspeed_config(cfg: Any, world_size: int) -> dict[str, Any]:
 
     precision = cfg.train.precision
     config: dict[str, Any] = {
-        "train_batch_size": micro * accum * max(1, world_size),
+        # 梯度累积由主循环手动完成（engine.step() 每 accum 个 micro-step 调一次），
+        # 所以 DS 侧 gradient_accumulation_steps 固定为 1；train_batch_size 只用于
+        # DS 的一致性校验，必须按 micro * world（不再乘 accum）填写。
+        "train_batch_size": micro * max(1, world_size),
         "train_micro_batch_size_per_gpu": micro,
         "gradient_accumulation_steps": 1,
         "gradient_clipping": float(cfg.train.grad_clip),
@@ -61,6 +63,25 @@ def build_deepspeed_config(cfg: Any, world_size: int) -> dict[str, Any]:
         "bf16": {"enabled": precision in ("bf16", "bf16-full")},
     }
     return config
+
+
+def _init_single_process_group() -> None:
+    """为单进程 DeepSpeed 建一个 world_size=1 的进程组。"""
+    import os
+    import socket
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = int(sock.getsockname()[1])
+    os.environ.setdefault("MASTER_ADDR", "127.0.0.1")
+    os.environ.setdefault("MASTER_PORT", str(port))
+    # DeepSpeed 0.14 会直接读取 LOCAL_RANK。
+    os.environ.setdefault("LOCAL_RANK", "0")
+    os.environ.setdefault("RANK", "0")
+    os.environ.setdefault("WORLD_SIZE", "1")
+    backend = "nccl" if torch.cuda.is_available() else "gloo"
+    torch.distributed.init_process_group(backend=backend, init_method="env://",
+                                         world_size=1, rank=0)
 
 
 def create_deepspeed_backend(
@@ -94,13 +115,17 @@ def create_deepspeed_backend(
         )
 
     trainable = [p for p in model.parameters() if p.requires_grad]
+    # 单进程（没有 torchrun）时 DeepSpeed 没有进程组，会去探测 MPI 然后报
+    # `No module named 'mpi4py'`。这里先建一个单进程 PG，再让 DS 复用。
+    if not torch.distributed.is_initialized():
+        _init_single_process_group()
     engine, ds_optimizer, _, ds_scheduler = deepspeed.initialize(
         model=model,
         model_parameters=trainable,
         optimizer=optimizer,
         lr_scheduler=scheduler,
         config=ds_config,
-        dist_init_required=not torch.distributed.is_initialized(),
+        dist_init_required=False,
     )
     return DeepSpeedBackend(
         engine=engine,

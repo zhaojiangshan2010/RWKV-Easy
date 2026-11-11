@@ -442,6 +442,9 @@ class RWKV7(nn.Module):
     def set_decay_mode(self, mode: str) -> None:
         for block in self.blocks:
             block.att.set_decay_mode(mode)
+        # native 后端在 clampw 下可以关掉动态二分（省掉每块一次 GPU 同步）。
+        if hasattr(self.backend, "set_dynamic_split"):
+            self.backend.set_dynamic_split(mode != "clampw")
 
     def attach_state_tuning(self, init_std: float = 0.0) -> list[nn.Parameter]:
         """给每层 attention 注入可训练的 ``time_state``。"""

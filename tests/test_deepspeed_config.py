@@ -21,7 +21,7 @@ def test_zero2_defaults(tmp_path, tiny_checkpoint, tiny_sharegpt):
         dist={"mode": "deepspeed", "deepspeed": {"zero_stage": 2}},
     )
     ds = build_deepspeed_config(cfg, world_size=2)
-    assert ds["train_batch_size"] == 2 * 4 * 2
+    assert ds["train_batch_size"] == 2 * 2  # 梯度累积由主循环负责，不乘 accum
     assert ds["train_micro_batch_size_per_gpu"] == 2
     assert ds["gradient_accumulation_steps"] == 1
     assert ds["zero_optimization"]["stage"] == 2

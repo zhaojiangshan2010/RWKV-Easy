@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import dataclasses
 import difflib
+import re
 import types
 from dataclasses import dataclass, field, fields, is_dataclass
 from pathlib import Path
@@ -575,12 +576,20 @@ def _apply_override(raw: dict[str, Any], item: str) -> None:
         value = yaml.safe_load(value_text)
     except yaml.YAMLError as exc:  # pragma: no cover
         raise ConfigError(f"--set {item!r} 的值无法解析：{exc}") from exc
+    # YAML 1.1 会把 `2e-4` 解析成字符串（必须有小数点才算 float）。
+    # 命令行里 `--set train.lr=2e-4` 太常见，这里兜底成浮点数。
+    if isinstance(value, str) and re.fullmatch(
+        r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)[eE][+-]?\d+", value
+    ):
+        value = float(value)
 
     parts = key.split(".")
     node = raw
     for depth, part in enumerate(parts[:-1]):
         if part not in node:
-            raise ConfigError(f"--set 找不到配置段：{'.'.join(parts[: depth + 1])}")
+            # YAML 里没写这一段（比如用户没写 dist.deepspeed）时自动补空 dict，
+            # 交给 dataclass 转换去落实默认值；拼错字段仍会报“未知配置项”。
+            node[part] = {}
         if not isinstance(node[part], dict):
             raise ConfigError(f"--set {key!r}：{'.'.join(parts[: depth + 1])} 不是配置段")
         node = node[part]

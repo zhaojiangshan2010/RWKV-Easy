@@ -116,3 +116,23 @@ def test_precision_normalization(tmp_path, tiny_checkpoint, tiny_sharegpt):
     cfg = build_config(tmp_path, tiny_checkpoint(), tiny_sharegpt, {"train": {"precision": "bf16-true"}})
     cfg.resolve()
     assert cfg.train.precision == "bf16-full"
+
+
+def test_set_scientific_notation(tmp_path, tiny_checkpoint, tiny_sharegpt):
+    """YAML 1.1 会把 2e-4 当成字符串；--set 必须能识别成 float。"""
+    cfg = build_config(tmp_path, tiny_checkpoint(), tiny_sharegpt)
+    path = tmp_path / "cfg.yaml"
+    cfg.save_yaml(path)
+    loaded = Config.load(path, ["train.lr=2e-4"])
+    assert loaded.train.lr == 2e-4
+    assert isinstance(loaded.train.lr, float)
+
+
+def test_set_creates_missing_section(tmp_path, tiny_checkpoint, tiny_sharegpt):
+    """YAML 里没写 dist.deepspeed 时，--set dist.deepspeed.zero_stage=2 也应生效。"""
+    cfg = build_config(tmp_path, tiny_checkpoint(), tiny_sharegpt)
+    path = tmp_path / "cfg.yaml"
+    cfg.save_yaml(path)
+    loaded = Config.load(path, ["dist.mode=deepspeed", "dist.deepspeed.zero_stage=2"])
+    assert loaded.dist.mode == "deepspeed"
+    assert loaded.dist.deepspeed.zero_stage == 2

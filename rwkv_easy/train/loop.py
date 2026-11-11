@@ -43,6 +43,7 @@ from ..runtime import (
     format_seconds,
     get_logger,
     is_main_process,
+    make_grad_scaler,
     normalize_precision,
     peak_memory_gib,
     reset_peak_memory,
@@ -223,7 +224,7 @@ class Trainer:
             and self.device.type == "cuda"
             and not isinstance(self.backend, DeepSpeedBackend)
         ):
-            self.scaler = torch.amp.GradScaler("cuda")
+            self.scaler = make_grad_scaler(self.device)
             self.backend.scaler = self.scaler
 
         # 进度

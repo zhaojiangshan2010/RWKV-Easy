@@ -37,6 +37,20 @@ DeepSpeed 需要编译工具链。可以先不装：
 - 单卡直接训练；
 - 多卡用 `dist.mode: ddp`。
 
+**`model.backend: fla` 导入失败（`No module named 'triton.language.extra.libdevice'`）**
+rwkv-fla 0.7 需要 **Triton ≥ 3.2**（通常对应 torch ≥ 2.4）。旧环境
+（例如 torch 2.2 + triton 2.2）会在 `rwkvfla/utils.py` 处直接失败。
+换一个干净环境：
+
+```bash
+python -m venv ~/venv-fla
+~/venv-fla/bin/pip install torch --index-url https://download.pytorch.org/whl/cu124
+~/venv-fla/bin/pip install rwkv-fla pyyaml
+```
+
+注意 fla 后端要求 `model.decay: softplus`；而官方权重的正确口径是 `clampw`
+（见 [`MODEL_CHECK.md`](MODEL_CHECK.md)）。追求质量时先留在 `native`。
+
 **Windows 上 `torchrun` 报 `use_libuv was requested but PyTorch was built without libuv support`**
 这是精简版 PyTorch 的问题。本项目内置的启动器不使用 torchrun，不受影响；
 如果你手动用 `torchrun`，加环境变量 `USE_LIBUV=0` 或改用 `rwkv-easy train`。

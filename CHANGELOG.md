@@ -31,12 +31,31 @@
 
 ### 验证
 
-- 96 个纯 CPU 测试（含 fp64 数值对照、infctx 等价性、2 进程 DDP）
+- 98 个纯 CPU 测试（含 fp64 数值对照、infctx 等价性、2 进程 DDP）
 - `selftest --full`：lora/state × infctx on/off × fp32/bf16 共 8 组
 - 真实权重 `rwkv7-g1d-0.1b`：decay=clampw（NLL 2.54），续写连贯；
   LoRA 20 步、infctx 8 步、合并等价性（logits 误差 7.8e-5）
 - 自我认知过拟合 demo：400 步 EMA 3.75→0.087，10/10 命中（含未见问法）
 
+### GPU 验证（2026-11-11，24GB Ampere 级）
+
+- 真实 0.1B：`check-model`、LoRA、State、infctx、合并、fp16、DeepSpeed ZeRO-2 全部跑通
+- LoRA ctx512/bsz4 ≈4.8K tok/s（5.8GiB）；infctx ctx4096/chunk512 ≈700 tok/s（3.7GiB）
+- 0.1B 是启动开销受限：bsz 1→8 单步 365→378ms，吞吐 1.4K→10.8K tok/s
+- 自我认知 demo 在 GPU 上 400 步 60 秒，8/8 命中
+
+### 修复（GPU 验证中发现）
+
+- `torch < 2.4` 的 `torch.load(mmap=True)` 只接受 `str`，传 `Path` 报错
+- `torch 2.2` 没有 `torch.amp.GradScaler`，fp16 路径加兼容层
+- 在 `model.to(device)` 之后注入 LoRA 时 A/B 建在 CPU，设备不匹配
+- `--set train.lr=2e-4` 被 YAML 1.1 解析成字符串
+- `--set dist.deepspeed.zero_stage` 在 YAML 缺该段时直接报错
+- DeepSpeed 单进程缺进程组（去探测 MPI）、缺 `LOCAL_RANK`
+- DeepSpeed `train_batch_size` 与手动梯度累积冲突
+- clampw 模式下 WKV 逐块 `.item()` 同步，改为静态分块
+
 ### 尚未验证
 
-- CUDA 性能/显存、fp16 + GradScaler、DeepSpeed 实跑、fla/Triton、NCCL 多卡
+- rwkv-fla / Triton 后端（测试环境 torch 2.2 + triton 2.2 与 rwkv-fla 0.7 不兼容）
+- NCCL 多卡（当前只有单卡）

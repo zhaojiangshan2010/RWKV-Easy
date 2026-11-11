@@ -15,10 +15,11 @@
 | 范围 | 状态 |
 |---|---|
 | 数学正确性（WKV 前向/梯度、infctx 等价性、LoRA 合并） | ✅ CPU 上与 float64 参考对照，误差 < 1e-5 |
-| 数据管线（ShareGPT、completion-only mask、packed/sample） | ✅ 96 个测试覆盖 |
+| 数据管线（ShareGPT、completion-only mask、packed/sample） | ✅ 98 个测试覆盖 |
 | 端到端（训练、断点、合并、重载、bf16、2 进程 DDP） | ✅ CPU 上验证通过 |
-| 真实 RWKV-7 权重 | ✅ `rwkv7-g1d-0.1b` 已在 CPU 验收：decay=clampw，NLL 2.54，续写连贯 |
-| CUDA 性能/显存、fp16、DeepSpeed、fla/Triton | ⏳ 需要 NVIDIA GPU 验证 |
+| 真实 RWKV-7 权重 | ✅ `rwkv7-g1d-0.1b` 在 CPU 与 GPU 上都已验收：decay=clampw，NLL 2.54，续写连贯 |
+| GPU 训练（LoRA / State / infctx / fp16 / DeepSpeed） | ✅ 24GB Ampere 级 GPU 全跑通，数字见 [`docs/GPU_VERIFICATION.md`](docs/GPU_VERIFICATION.md) |
+| rwkv-fla（Triton 后端） | ⏳ 测试环境 torch 2.2 / triton 2.2 与 rwkv-fla 0.7 不兼容；需 torch ≥ 2.4 + triton ≥ 3.2 |
 
 本机（Windows + CPU）已验证的内容与复现命令见
 [`docs/CPU_VERIFICATION.md`](docs/CPU_VERIFICATION.md)。
@@ -213,7 +214,7 @@ python -m rwkv_easy train -c configs/my-lora-run.yaml --resume runs/xxx
 WKV 算子是纯 PyTorch 写的，所以整条链路都能在 CPU 上验证。三条命令：
 
 ```bash
-python -m pytest tests -q                      # 96 个测试，约 3-6 分钟
+python -m pytest tests -q                      # 98 个测试，约 3-6 分钟
 python -m rwkv_easy selftest --full            # lora/state × infctx on/off × fp32/bf16
 python -m rwkv_easy train -c configs/debug_cpu.yaml   # 随机小模型，20 步
 ```
@@ -449,7 +450,9 @@ Assistant: 【苹果】【
 | 3B | LoRA | ~22 GB | ~24 GB |
 | 7B | LoRA | 需要 24GB+ 或 ZeRO-2/3 | 建议 `bf16-full` + `chunk_ctx 512` |
 
-### 实测速度（CPU，仅供参考）
+### 实测速度
+
+CPU（Windows，8 线程）：
 
 | 场景 | 配置 | 速度 |
 |---|---|---|
@@ -457,9 +460,21 @@ Assistant: 【苹果】【
 | 0.1B LoRA | ctx 64，bsz 1，r=16，fp32 | ≈70 tok/s |
 | 0.1B LoRA + infctx | ctx 128 / chunk 64，fp32 | ≈62 tok/s |
 | 0.1B 自我认知过拟合 | sample，ctx 64，400 步 | 约 4.5 分钟 |
-| GPU | — | 待 GPU 机器验证后补充 |
 
 CPU 上一定要用 `precision: fp32`：bf16 参数的反向传播会慢约 75 倍。
+
+GPU（24GB Ampere 级，0.1B，bf16）：
+
+| 场景 | 配置 | 速度 | 显存 |
+|---|---|---|---|
+| LoRA | ctx 512 / bsz 4 | ≈4.6–5.0K tok/s | 5.8 GiB |
+| LoRA | ctx 1024 / bsz 2 | ≈2.5–2.8K tok/s | 5.8 GiB |
+| LoRA + infctx | ctx 4096 / chunk 512 / bsz 1 | ≈700 tok/s | 3.7 GiB |
+| State | ctx 512 / bsz 4 | ≈5.1–5.6K tok/s | 5.3 GiB |
+| fp16 / DeepSpeed ZeRO-2 | ctx 512 / bsz 2 | ≈2.3–2.5K tok/s | 3.4 GiB |
+
+0.1B 在 GPU 上是启动开销受限（bsz 1→8 单步耗时几乎不变）；模型越大，
+计算占比越高。完整分析见 [`docs/GPU_VERIFICATION.md`](docs/GPU_VERIFICATION.md)。
 
 显存不够时，按顺序尝试：
 
@@ -537,6 +552,7 @@ RWKV-EASY/
 - [`docs/DATASET.md`](docs/DATASET.md)：ShareGPT、模板、completion-only mask、packed vs sample
 - [`docs/CPU_VERIFICATION.md`](docs/CPU_VERIFICATION.md)：CPU 能验证什么、怎么复现、实测数字
 - [`docs/MODEL_CHECK.md`](docs/MODEL_CHECK.md)：新权重 5 分钟验收清单与异常对照
+- [`docs/GPU_VERIFICATION.md`](docs/GPU_VERIFICATION.md)：GPU 实测数字、瓶颈分析与 rwkv-fla 兼容性
 - [`docs/EXTENDING.md`](docs/EXTENDING.md)：接入自定义 WKV 内核（CUDA/Triton/ROCm）、新模型版本、新数据格式
 - [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md)：报错对照表
 - [`CHANGELOG.md`](CHANGELOG.md)：版本与本次验证/修复记录

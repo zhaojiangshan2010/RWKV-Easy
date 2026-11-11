@@ -96,11 +96,12 @@ def read_checkpoint(path: str | Path) -> dict[str, torch.Tensor]:
         state_dict = dict(load_file(str(path)))
     else:
         try:
-            obj = torch.load(path, map_location="cpu", weights_only=True, mmap=True)
+            # torch < 2.4 的 mmap 只接受 str，不能传 Path。
+            obj = torch.load(str(path), map_location="cpu", weights_only=True, mmap=True)
         except TypeError:  # pragma: no cover - 老版本 torch 没有 mmap
-            obj = torch.load(path, map_location="cpu", weights_only=True)
+            obj = torch.load(str(path), map_location="cpu", weights_only=True)
         except RuntimeError:  # pragma: no cover - 非 zip 格式
-            obj = torch.load(path, map_location="cpu", weights_only=True)
+            obj = torch.load(str(path), map_location="cpu", weights_only=True)
         state_dict = _extract_state_dict(obj, path)
 
     state_dict = _strip_prefixes(state_dict)
@@ -208,7 +209,11 @@ def build_model(
     if decay == "auto":
         # auto 由训练器在拿到 tokenizer 后校准；这里先给一个安全默认值。
         decay = "clampw"
-    wkv_backend = create_backend(backend, chunk=wkv_chunk)
+    kwargs = {"chunk": wkv_chunk}
+    if backend == "native":
+        # clampw 的衰减有固定上界，不需要逐块做 `.item()` 同步。
+        kwargs["dynamic_split"] = decay != "clampw"
+    wkv_backend = create_backend(backend, **kwargs)
     return RWKV7(cfg, wkv_backend, decay_mode=decay, grad_checkpoint=grad_checkpoint)
 
 

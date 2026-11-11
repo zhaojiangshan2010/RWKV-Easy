@@ -50,10 +50,21 @@ _LOG_DECAY_FLOOR = -80.0
 class NativeBackend:
     name = "native"
 
-    def __init__(self, chunk: int = 64, max_decay_span: float = _DEFAULT_MAX_DECAY_SPAN) -> None:
+    def __init__(
+        self,
+        chunk: int = 64,
+        max_decay_span: float = _DEFAULT_MAX_DECAY_SPAN,
+        dynamic_split: bool = True,
+    ) -> None:
         # 反归一化因子的指数上限约为 0.6*chunk；96 已经接近 fp32 的安全边界。
         self.chunk = max(1, min(int(chunk), 96))
         self.max_decay_span = float(max_decay_span)
+        # clampw 模式的 log-decay 有固定上界（|w| < 0.6066），96*0.6066 < 60，
+        # 永远不需要二分。关掉动态切分可以避免每个块一次 `.item()` 的 GPU 同步。
+        self.dynamic_split = bool(dynamic_split)
+
+    def set_dynamic_split(self, enabled: bool) -> None:
+        self.dynamic_split = bool(enabled)
 
     # ------------------------------------------------------------------ #
     # 公共入口
@@ -143,8 +154,9 @@ class NativeBackend:
         depth: int = 0,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         length = r.shape[1]
-        if length > 1 and depth < 16:
-            # 该块内所有通道中最强的累计衰减（正数）
+        if self.dynamic_split and length > 1 and depth < 16:
+            # 该块内所有通道中最强的累计衰减（正数）。注意这里会触发一次
+            # GPU 同步，只在 softplus/exp 这类无上界的模式里才需要。
             span = float(-w.sum(dim=1).min().item())
             if span > self.max_decay_span:
                 mid = length // 2
