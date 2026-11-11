@@ -282,8 +282,19 @@ class Trainer:
             reduction="sum",
         )
         loss = loss / count
-        if self.cfg.train.l2wrap > 0 and self.model.training:
-            loss = L2Wrap.apply(loss, logits, self.cfg.train.l2wrap / max(1, flat_labels.numel()))
+        if self.cfg.train.l2wrap > 0 and self.model.training and logits.requires_grad:
+            # 与官方 L2Wrap 数学等价，但不再为 logits 新建一份全量梯度：
+            # 在 CE 已经算出的 grad 上原地 scatter_add 每行的 max logit。
+            # 注意闭包只能捕获小的 max_value/indices；捕获 logits 会形成
+            # 引用环，让上一 步的 logits 无法及时释放（每步泄漏 2 GiB）。
+            factor = self.cfg.train.l2wrap / max(1, flat_labels.numel())
+            max_value, indices = torch.max(logits.detach(), dim=-1, keepdim=True)
+
+            def _l2wrap_hook(grad: torch.Tensor) -> torch.Tensor:
+                grad.scatter_add_(-1, indices, max_value.to(grad.dtype) * factor)
+                return grad
+
+            logits.register_hook(_l2wrap_hook)
         return loss, count
 
     def compute_loss(self, batch: dict[str, torch.Tensor]) -> tuple[torch.Tensor, int]:

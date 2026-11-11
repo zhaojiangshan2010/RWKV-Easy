@@ -63,6 +63,7 @@ class NativeBackend:
         # clampw 模式的 log-decay 有固定上界（|w| < 0.6066），96*0.6066 < 60，
         # 永远不需要二分。关掉动态切分可以避免每个块一次 `.item()` 的 GPU 同步。
         self.dynamic_split = bool(dynamic_split)
+        self._mask_cache: dict[tuple[int, str], tuple[torch.Tensor, torch.Tensor]] = {}
 
     def set_dynamic_split(self, enabled: bool) -> None:
         self.dynamic_split = bool(enabled)
@@ -157,6 +158,19 @@ class NativeBackend:
     # 单块
     # ------------------------------------------------------------------ #
 
+    def _masks(self, length: int, device: torch.device) -> tuple[torch.Tensor, torch.Tensor]:
+        """缓存块内下三角掩码（full 与 strict），避免每个 chunk 重新分配。"""
+        key = (length, str(device))
+        masks = self._mask_cache.get(key)
+        if masks is None:
+            tril = torch.ones(length, length, dtype=torch.bool, device=device).tril()
+            strict = tril.tril(diagonal=-1)
+            if len(self._mask_cache) > 8:
+                self._mask_cache.clear()
+            self._mask_cache[key] = (tril, strict)
+            masks = (tril, strict)
+        return masks
+
     def _chunk(
         self,
         r: torch.Tensor,
@@ -199,8 +213,7 @@ class NativeBackend:
         ak = wa @ kwi.transpose(1, 2)
         aa = wa @ bwi.transpose(1, 2)
 
-        tril = torch.ones(length, length, dtype=torch.bool, device=device).tril()
-        strict = tril.tril(diagonal=-1)
+        tril, strict = self._masks(length, device)
         qk = qk * tril
         qb = qb * tril
         ak = ak * strict
@@ -209,9 +222,9 @@ class NativeBackend:
         state_bh = state.reshape(bh, head_dim, head_dim)
         rhs = wa @ state_bh + ak @ v_bh  # (BH,L,V)
 
-        # (I - A) U = RHS，A 严格下三角，因此 I-A 的对角线恒为 1。
-        eye = torch.eye(length, dtype=rhs.dtype, device=device).expand(bh, length, length)
-        u = torch.linalg.solve_triangular(eye - aa, rhs, upper=False)
+        # (I - A) U = RHS。A 严格下三角、对角线为 0，因此 -A 是严格下三角，
+        # 用 unitriangular=True 让求解器把对角线当成 1，省掉 eye 与对角减法。
+        u = torch.linalg.solve_triangular(-aa, rhs, upper=False, unitriangular=True)
 
         out = wq @ state_bh + qk @ v_bh + qb @ u  # (BH,L,V)
 
