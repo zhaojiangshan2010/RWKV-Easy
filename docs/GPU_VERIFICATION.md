@@ -269,4 +269,4 @@ python -m pytest tests -o addopts="" -q
   EASY 用 fla + compile、`bf16-full`，12 步/组；均取稳定 step，排除首次编译。
 - GC on：PEFT 快 7–34%；GC off + bsz≥8：EASY 快 6–9%。
 - 最佳配置：EASY 44.2K（bsz32/no-GC） vs PEFT 40.9K（bsz32/no-GC）。
-- 图表与完整公平性说明见 README 的「与 RWKV-PEFT 的 LoRA 对比」。
+- 图表见 README 的「性能」一节；完整公平性说明见本节上文。
