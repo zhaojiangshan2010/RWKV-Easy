@@ -116,6 +116,22 @@ def ensure_venv(args: argparse.Namespace) -> Path | None:
     if not python.exists():
         warn("没有找到 .venv 里的 Python，改用当前环境。")
         return None
+    if args.skip_install:
+        # --skip-install 表示“环境已经就绪”。如果 .venv 是半成品（比如只建了目录、
+        # 没有装 torch），继续用它只会在启动向导时崩，直接回退到当前解释器。
+        try:
+            probe = subprocess.run(
+                [str(python), "-c", "import torch"],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            probe = None
+        if probe is None or probe.returncode != 0:
+            warn("检测到 .venv 不完整（没有可导入的 torch）；--skip-install 改用当前 Python。")
+            return None
     return python
 
 
@@ -168,6 +184,23 @@ def torch_status() -> tuple[str | None, str | None, bool]:
         getattr(torch.version, "cuda", None),
         bool(torch.cuda.is_available()),
     )
+
+
+def torch_gpu_info() -> dict[str, str | float | None]:
+    """torch 视角的 GPU 信息，用于 nvidia-smi 不可用的虚拟化环境。"""
+    try:
+        import torch
+
+        if not torch.cuda.is_available():
+            return {}
+        props = torch.cuda.get_device_properties(0)
+        return {
+            "name": props.name,
+            "memory_gib": props.total_memory / 1024**3,
+            "cuda": getattr(torch.version, "cuda", None),
+        }
+    except Exception:
+        return {}
 
 
 def cuda_tags(version: str | None) -> list[str]:
@@ -269,20 +302,49 @@ def _wizard_command(args: argparse.Namespace) -> list[str]:
 
 def run_ready(args: argparse.Namespace) -> int:
     print()
-    print(color("=" * 66, CYAN))
+    print(color("=" * 68, CYAN))
     print(color(" RWKV-EASY 一键安装 / 训练向导", "1;36"))
-    print(color("=" * 66, CYAN))
+    print(color("=" * 68, CYAN))
+    print(" 这次会做 3 件事：")
+    print("   1. 检测 Python / GPU / CUDA")
+    print("   2. 安装 PyTorch 和本项目（已经装好会自动跳过）")
+    print("   3. 打开配置向导：选模板 → 选模型/数据 → 开始训练")
+    print()
+
+    say("[1/3] 检测环境")
     say(f"Python：{sys.executable}（{sys.version.split()[0]}）")
     nvidia = nvidia_info()
+    torch_gpu = torch_gpu_info()
+    for key in ("name", "memory_gib", "cuda"):
+        if not nvidia.get(key) and torch_gpu.get(key):
+            nvidia[key] = torch_gpu[key]
     if nvidia.get("name"):
+        driver = f" / 驱动 {nvidia.get('driver')}" if nvidia.get("driver") else ""
         say(
             f"GPU：{nvidia.get('name')}（{nvidia.get('memory_gib') or 0:.1f} GiB）"
-            f" / 驱动 {nvidia.get('driver') or '?'} / CUDA {nvidia.get('cuda') or '?'}"
+            f"{driver} / CUDA {nvidia.get('cuda') or '?'}"
         )
     else:
-        warn("未检测到 NVIDIA GPU；将安装 CPU 版 PyTorch，只建议做自检。")
+        warn("未检测到 NVIDIA GPU；只能安装 CPU 版 PyTorch，训练会很慢。")
+        if not args.skip_install and not args.cpu and not args.yes and sys.stdin.isatty():
+            try:
+                answer = input("仍要继续安装 CPU 版吗？[Y/n] ").strip().lower()
+            except EOFError:
+                answer = "n"
+            if answer not in ("", "y", "yes"):
+                warn("已取消。拿到 NVIDIA GPU 后重新运行 python quickstart.py 即可。")
+                return 1
+
+    if args.skip_install:
+        version, _, _ = torch_status()
+        if version is None:
+            return die(
+                "--skip-install 需要当前 Python 已经安装 torch；"
+                "去掉这个参数让 quickstart 自动安装，或先手动 pip install torch。"
+            )
 
     if not args.skip_install:
+        say("[2/3] 安装 PyTorch 和项目")
         version, cuda, available = torch_status()
         need_torch = version is None or (nvidia.get("name") and not available and not args.cpu)
         code = install_torch(nvidia, args, force=bool(need_torch or args.reinstall))
@@ -299,17 +361,21 @@ def run_ready(args: argparse.Namespace) -> int:
             return die("项目安装失败；请检查上面的 pip 输出。")
         install_optional_fla(nvidia, args)
     else:
-        say("--skip-install：跳过安装，直接进入向导。")
+        say("[2/3] --skip-install：跳过安装")
 
     if args.install_only:
-        say("安装完成。")
-        print("\n下一步：")
-        print(f"  cd {PROJECT_ROOT}")
-        print(f"  {sys.executable} -m rwkv_easy wizard")
+        print()
+        print(color("=" * 68, CYAN))
+        print(color(" 安装完成", "1;32"))
+        print(color("=" * 68, CYAN))
+        print(" 下一步：")
+        print(f"   cd {PROJECT_ROOT}")
+        print(f"   {sys.executable} -m rwkv_easy wizard")
         return 0
 
     print()
-    say("启动交互式配置向导 ...")
+    say("[3/3] 启动交互式配置向导")
+    say("向导里：←/→ 切换选项，空格勾选模块/层，Enter 进入下一步；q 退出。")
     try:
         return int(subprocess.call(_wizard_command(args)))
     except KeyboardInterrupt:

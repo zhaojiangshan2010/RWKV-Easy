@@ -26,7 +26,10 @@ Windows 双击 `quickstart.bat`，Linux/macOS 也可以 `bash quickstart.sh`。
 
 它会：检测 NVIDIA 驱动与 CUDA → 创建 `.venv` → 按 CUDA 版本安装对应的
 PyTorch → 安装本项目 →（可选）安装 rwkv-fla → 进入交互式向导 → 直接训练。
-参数与界面见 [`WIZARD.md`](WIZARD.md)。
+
+向导启动后先显示欢迎页：**直接回车使用推荐模板**，也可以按场景选长上下文 /
+State / 省显存 / 20 步试跑，或按 `g` 查看 4 页新手引导。首页每个参数都有
+行内注释，选中后还有详细说明。参数与界面见 [`WIZARD.md`](WIZARD.md)。
 
 ### 只安装，不配置
 
@@ -330,7 +333,7 @@ rwkv-easy train -c configs/lora_sharegpt_infctx.yaml \
 WKV 算子是纯 PyTorch 写的，所以整条链路都能在 CPU 上验证。三条命令：
 
 ```bash
-python -m pytest tests -q                            # 126 个（CPU 上 121 passed + 5 fla skipped）
+python -m pytest tests -q                            # 131 个（CPU 上 126 passed + 5 fla skipped）
 rwkv-easy selftest --full                            # lora/state × infctx on/off × fp32/bf16
 rwkv-easy train -c configs/debug_cpu.yaml             # 随机小模型，20 步
 ```

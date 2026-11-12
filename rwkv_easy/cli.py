@@ -135,6 +135,7 @@ def build_parser() -> argparse.ArgumentParser:
     wiz = sub.add_parser("wizard", help="交互式一键配置并训练（新手推荐）")
     wiz.add_argument("--non-interactive", action="store_true", help="分行问答（无 TTY / 脚本）")
     wiz.add_argument("--no-train", action="store_true", help="只生成配置，不启动训练")
+    wiz.add_argument("--no-welcome", action="store_true", help="跳过欢迎页，直接进入配置")
     wiz.add_argument("-o", "--output", default=None, help="配置文件输出路径")
 
     return parser
@@ -250,6 +251,7 @@ def cmd_wizard(args: argparse.Namespace) -> int:
             non_interactive=bool(args.non_interactive),
             no_train=bool(args.no_train),
             output=args.output,
+            welcome=not bool(getattr(args, "no_welcome", False)),
         )
     except (WizardCancelled, KeyboardInterrupt):
         print("\n已取消。")

@@ -2,10 +2,10 @@
 
 **RWKV-7 的一键式微调工具：只做 LoRA 和 State Tuning，两者都能叠加无限上下文（infctx）。**
 
-[![version](https://img.shields.io/badge/version-0.3.1-blue)](CHANGELOG.md)
+[![version](https://img.shields.io/badge/version-0.4.0-blue)](CHANGELOG.md)
 [![python](https://img.shields.io/badge/python-3.10%2B-blue)](pyproject.toml)
 [![license](https://img.shields.io/badge/license-Apache--2.0-green)](LICENSE)
-[![tests](https://img.shields.io/badge/tests-126-brightgreen)](tests)
+[![tests](https://img.shields.io/badge/tests-131-brightgreen)](tests)
 
 一条命令装好环境，在向导里按回车就能开始训练。数据用 ShareGPT，
 只有 assistant 回复参与 loss；CPU / CUDA / ROCm / MPS 通用，
@@ -63,8 +63,10 @@ python quickstart.py
 Windows 双击 `quickstart.bat`，Linux/macOS 也可以 `bash quickstart.sh`。
 
 它会自动检测 CUDA、创建 `.venv`、安装对应 PyTorch 与本项目，然后进入向导：
-`←/→` 选 LoRA / State、infctx、后端、精度，`空格` 勾选 LoRA 模块与 block 层，
-模型/数据路径自动校验，回车保存配置并开始训练。详见 [`docs/WIZARD.md`](docs/WIZARD.md)。
+欢迎页可一键使用**推荐模板**，也可以按场景选长上下文 / State / 省显存 / 20 步试跑；
+`←/→` 切换选项，`空格` 勾选 LoRA 模块与 block 层，每个参数右侧都有行内注释，
+选中后还有详细说明，`g` 可打开 4 页新手引导。模型/数据路径自动校验。
+详见 [`docs/WIZARD.md`](docs/WIZARD.md)。
 
 ### 手动四步
 
@@ -107,7 +109,7 @@ ShareGPT、OpenAI `messages`、两列指令和纯文本。完整流程（安装�
 
 ## 项目状态
 
-- **126 个测试**（CPU 上 121 passed + 5 个 fla skipped），ruff 干净；`selftest --full`
+- **131 个测试**（CPU 上 126 passed + 5 个 fla skipped），ruff 干净；`selftest --full`
   覆盖 LoRA / State × infctx × fp32 / bf16 共 8 种组合。
 - **数学正确性**：WKV 前向 / 状态 / 梯度与 float64 逐 token 参考误差 < 1e-5；
   分块前向 == 整段；infctx 状态传递等价；LoRA 合并误差 < 1e-6。

@@ -9,17 +9,28 @@ import pytest
 
 from rwkv_easy.config import Config
 from rwkv_easy.wizard import (
+    PRESETS,
     Console,
     Environment,
     FormField,
     WizardError,
     WizardState,
+    _data_fields,
+    _home_items,
+    _lora_fields,
+    _misc_fields,
+    _model_fields,
+    _training_fields,
+    _truncate,
+    _wrap_text,
     apply_method_defaults,
+    apply_preset,
     config_summary,
     cuda_tag_candidates,
     default_config,
     inspect_model,
     normalize_for_environment,
+    text_width,
     validate_dataset_path,
     validate_model_path,
 )
@@ -147,3 +158,89 @@ def test_quickstart_helpers():
     assert args.non_interactive is True
     assert args.no_train is True
     assert venv_python(Path(".")).name in ("python", "python.exe")
+
+
+def test_all_wizard_fields_have_comments():
+    env = _env(cuda=True, fla=True)
+    state = WizardState(env=env, cfg=default_config(env))
+    groups = [
+        _training_fields(state),
+        _model_fields(state),
+        _data_fields(state),
+        _misc_fields(state),
+        _lora_fields(state),
+    ]
+    paths = [field.path for group in groups for field in group]
+    assert len(paths) == len(set(paths)), "同一个字段在高级设置里出现了两次"
+    for group in groups:
+        for field in group:
+            assert field.comment.strip(), f"{field.path} 缺少行内注释"
+            assert field.help.strip(), f"{field.path} 缺少详细说明"
+
+
+def test_presets_cover_main_scenarios():
+    keys = {preset.key for preset in PRESETS}
+    assert {"recommended", "lora-infctx", "state", "state-infctx", "low-memory", "quick-test"} <= keys
+    for preset in PRESETS:
+        assert preset.title and preset.tag and preset.summary and preset.description
+
+
+def test_apply_preset_updates_training_but_keeps_paths(tmp_path, tiny_checkpoint, tiny_sharegpt):
+    env = _env(cuda=True, fla=True)
+    cfg = default_config(env)
+    state = WizardState(env=env, cfg=cfg)
+    state.set_model(inspect_model(str(tiny_checkpoint())))
+    state.set_dataset(validate_dataset_path(str(tiny_sharegpt)))
+    model_path = cfg.model.path
+    data_path = cfg.data.path
+    output_dir = cfg.run.output_dir
+
+    apply_preset(state, "lora-infctx")
+    assert cfg.train.method == "lora"
+    assert cfg.train.infctx is True
+    assert cfg.train.chunk_ctx == 2048
+    assert cfg.train.ctx_len >= 8192
+    assert state.preset_key == "lora-infctx"
+
+    apply_preset(state, "state")
+    assert cfg.train.method == "state"
+    assert cfg.train.infctx is False
+    assert cfg.train.lr == pytest.approx(5e-3)
+
+    apply_preset(state, "low-memory")
+    assert cfg.train.micro_batch_size == 1
+    assert cfg.train.grad_checkpoint is True
+    assert cfg.train.compile is False
+    assert cfg.run.name.endswith("lowmem")
+
+    apply_preset(state, "quick-test")
+    assert cfg.train.max_steps == 20
+    assert cfg.train.log_every == 1
+    assert cfg.run.name == "quick-test"
+
+    assert cfg.model.path == model_path
+    assert cfg.data.path == data_path
+    assert cfg.run.output_dir == output_dir
+
+
+def test_home_items_have_help_and_presets():
+    env = _env(cuda=True, fla=True)
+    state = WizardState(env=env, cfg=default_config(env))
+    items = _home_items(state)
+    actions = [item.action for item in items]
+    assert "preset" in actions and "guide" in actions
+    assert actions[-2:] == ["start", "save"]
+    for item in items:
+        assert item.comment.strip(), f"{item.label} 缺少行内注释"
+        assert item.help.strip(), f"{item.label} 缺少详细说明"
+
+
+def test_cjk_width_truncate_and_wrap():
+    assert text_width("abc") == 3
+    assert text_width("中文") == 4
+    assert text_width("\033[31m红色\033[0m") == 4
+    assert _truncate("这是一个很长的中文句子", 8).endswith("…")
+    assert text_width(_truncate("这是一个很长的中文句子", 8)) <= 8
+    lines = _wrap_text("第一段很长的中文内容需要折行显示", 10)
+    assert len(lines) >= 2
+    assert all(text_width(line) <= 10 for line in lines)
