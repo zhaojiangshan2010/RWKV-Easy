@@ -499,11 +499,6 @@ class Config:
         return (
             f"{method}({detail}) | {infctx} ctx={self.train.ctx_len}"
             + (f"/chunk={self.train.chunk_ctx}" if self.train.infctx else "")
-            + (
-                " | ddp-chunk-backward"
-                if self.train.infctx and self.train.infctx_parallel_backward
-                else ""
-            )
             + f" | bsz={self.train.micro_batch_size}x{self.train.grad_accum}"
             f" | {self.train.precision} | data={Path(self.data.path).name}"
         )
