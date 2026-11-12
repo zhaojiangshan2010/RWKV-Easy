@@ -37,7 +37,7 @@ RWKV-EASY/
 │   └── assets/             # 内置词表、校准文本、示例数据
 ├── configs/                # 配置模板（含自我认知过拟合 demo）
 ├── docs/                   # 详细文档
-├── tests/                  # 131 个测试（CPU 上跳过 5 个 fla）
+├── tests/                  # 133 个测试（CPU 上跳过 5 个 fla）
 ├── examples/               # 示例数据（ShareGPT、自我认知实验数据）
 ├── CHANGELOG.md
 ├── install.sh / .bat / .ps1
@@ -49,7 +49,7 @@ RWKV-EASY/
 ## 3. 测试
 
 ```bash
-python -m pytest tests -q            # 全量：CPU 上 131 个，126 passed + 5 fla skipped
+python -m pytest tests -q            # 全量：CPU 上 133 个，128 passed + 5 fla skipped
 python -m ruff check rwkv_easy tests
 ```
 

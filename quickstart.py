@@ -366,7 +366,7 @@ def run_ready(args: argparse.Namespace) -> int:
     if args.install_only:
         print()
         print(color("=" * 68, CYAN))
-        print(color(" 安装完成", "1;32"))
+        print(color(" 环境已就绪" if args.skip_install else " 安装完成", "1;32"))
         print(color("=" * 68, CYAN))
         print(" 下一步：")
         print(f"   cd {PROJECT_ROOT}")

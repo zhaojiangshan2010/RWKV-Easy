@@ -333,7 +333,7 @@ rwkv-easy train -c configs/lora_sharegpt_infctx.yaml \
 WKV 算子是纯 PyTorch 写的，所以整条链路都能在 CPU 上验证。三条命令：
 
 ```bash
-python -m pytest tests -q                            # 131 个（CPU 上 126 passed + 5 fla skipped）
+python -m pytest tests -q                            # 133 个（CPU 上 128 passed + 5 fla skipped）
 rwkv-easy selftest --full                            # lora/state × infctx on/off × fp32/bf16
 rwkv-easy train -c configs/debug_cpu.yaml             # 随机小模型，20 步
 ```

@@ -1231,6 +1231,7 @@ class Console:
         footer: str = "↑↓ 选择   Enter 确认   q 退出",
         descriptions: Sequence[str] | None = None,
         intro: Sequence[str] = (),
+        extra_keys: dict[str, int] | None = None,
     ) -> int:
         if not items:
             raise WizardError("菜单是空的")
@@ -1283,6 +1284,8 @@ class Console:
                 index = max(0, min(len(items) - 1, index + (step if key == "pagedown" else -step)))
             elif key == "enter":
                 return index
+            elif extra_keys and key in extra_keys:
+                return extra_keys[key]
             elif key in ("q", "esc"):
                 raise WizardCancelled
 
@@ -1516,6 +1519,32 @@ class FormField:
             self.set(root, None if value is not None else base)
 
 
+def _find_field(fields: Sequence[FormField], query: str) -> int | None:
+    """按字段路径/名称/注释/说明搜索，路径和名称优先于长说明。"""
+    needle = query.strip().lower()
+    if not needle:
+        return None
+    best: int | None = None
+    best_score = 0
+    for index, field in enumerate(fields):
+        path = field.path.lower()
+        if path == needle:
+            score = 100
+        elif needle in path:
+            score = 80
+        elif needle in field.label.lower():
+            score = 60
+        elif needle in field.comment.lower():
+            score = 40
+        elif needle in field.help.lower():
+            score = 20
+        else:
+            score = 0
+        if score > best_score:
+            best, best_score = index, score
+    return best
+
+
 def _form(console: Console, title: str, fields: Sequence[FormField], root: Any, subtitle: str = "") -> None:
     if not fields:
         return
@@ -1557,7 +1586,7 @@ def _form(console: Console, title: str, fields: Sequence[FormField], root: Any, 
         console.note(current.help or current.comment or current.label, title="参数说明")
         console.print()
         console.footer(
-            "↑↓ 移动   ←→ 调整   Enter 精确输入/切换   PgUp/PgDn 翻页   q 返回"
+            "↑↓ 移动   ←→ 调整   Enter 编辑   / 搜索   PgUp/PgDn 翻页   q 返回"
         )
         key = console.read_key()
         if key == "up":
@@ -1568,6 +1597,14 @@ def _form(console: Console, title: str, fields: Sequence[FormField], root: Any, 
             index = 0
         elif key == "end":
             index = len(fields) - 1
+        elif key == "/":
+            query = console.read_line("  搜索参数（名称 / 字段 / 说明）", "")
+            match = _find_field(fields, query)
+            if match is None:
+                console.print(console.colorize(f"  没有找到包含“{query}”的参数。", "33"))
+                time.sleep(0.8)
+            else:
+                index = match
         elif key in ("pageup", "pagedown"):
             step = max(1, window - 1)
             index = max(0, min(len(fields) - 1, index + (step if key == "pagedown" else -step)))
@@ -2837,6 +2874,7 @@ def _welcome(console: Console, state: WizardState) -> str:
             descriptions=descriptions,
             intro=intro,
             footer="↑↓ 选择   Enter 确认   g 新手引导   q 退出",
+            extra_keys={"g": 2},
         )
     except WizardCancelled:
         return "quit"
@@ -2861,6 +2899,7 @@ def _keys_help(console: Console) -> None:
         "空格         勾选（多选界面）",
         "a / n        全选 / 清空（多选界面）",
         "PgUp / PgDn  翻页",
+        "/            在高级表单里搜索参数",
         "g            打开新手引导",
         "p            打开配置模板",
         "?            显示这个帮助",

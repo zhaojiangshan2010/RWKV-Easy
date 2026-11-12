@@ -16,6 +16,7 @@ from rwkv_easy.wizard import (
     WizardError,
     WizardState,
     _data_fields,
+    _find_field,
     _home_items,
     _lora_fields,
     _misc_fields,
@@ -244,3 +245,32 @@ def test_cjk_width_truncate_and_wrap():
     lines = _wrap_text("第一段很长的中文内容需要折行显示", 10)
     assert len(lines) >= 2
     assert all(text_width(line) <= 10 for line in lines)
+    # 英文单词不能被从中间折断。
+    wrapped = _wrap_text("这里有一个 assistant 单词需要保持完整", 12)
+    assert any("assistant" in line for line in wrapped)
+    # 中文逗号/句号不能跑到下一行开头。
+    wrapped = _wrap_text("这是一段很长的话，需要折行。", 8)
+    assert all(not line.startswith(("，", "。")) for line in wrapped)
+
+
+def test_form_field_search():
+    env = _env(cuda=True, fla=True)
+    fields = _training_fields(WizardState(env=env, cfg=default_config(env)))
+    by_path = _find_field(fields, "ctx_len")
+    assert by_path is not None and fields[by_path].path == "train.ctx_len"
+    by_label = _find_field(fields, "学习率")
+    assert by_label is not None and fields[by_label].path == "train.lr"
+    assert _find_field(fields, "不存在的参数") is None
+    assert _find_field(fields, "  ") is None
+
+
+def test_compact_summary_stays_short(tmp_path, tiny_checkpoint, tiny_sharegpt):
+    env = _env(cuda=True, fla=True)
+    state = WizardState(env=env, cfg=default_config(env))
+    state.set_model(inspect_model(str(tiny_checkpoint())))
+    state.set_dataset(validate_dataset_path(str(tiny_sharegpt)))
+    compact = config_summary(state, compact=True)
+    full = config_summary(state, compact=False)
+    assert "compile" not in compact
+    assert "compile" in full
+    assert len(compact.splitlines()) <= 9

@@ -5,7 +5,7 @@
 [![version](https://img.shields.io/badge/version-0.4.0-blue)](CHANGELOG.md)
 [![python](https://img.shields.io/badge/python-3.10%2B-blue)](pyproject.toml)
 [![license](https://img.shields.io/badge/license-Apache--2.0-green)](LICENSE)
-[![tests](https://img.shields.io/badge/tests-131-brightgreen)](tests)
+[![tests](https://img.shields.io/badge/tests-133-brightgreen)](tests)
 
 一条命令装好环境，在向导里按回车就能开始训练。数据用 ShareGPT，
 只有 assistant 回复参与 loss；CPU / CUDA / ROCm / MPS 通用，
@@ -109,7 +109,7 @@ ShareGPT、OpenAI `messages`、两列指令和纯文本。完整流程（安装�
 
 ## 项目状态
 
-- **131 个测试**（CPU 上 126 passed + 5 个 fla skipped），ruff 干净；`selftest --full`
+- **133 个测试**（CPU 上 128 passed + 5 个 fla skipped），ruff 干净；`selftest --full`
   覆盖 LoRA / State × infctx × fp32 / bf16 共 8 种组合。
 - **数学正确性**：WKV 前向 / 状态 / 梯度与 float64 逐 token 参考误差 < 1e-5；
   分块前向 == 整段；infctx 状态传递等价；LoRA 合并误差 < 1e-6。
