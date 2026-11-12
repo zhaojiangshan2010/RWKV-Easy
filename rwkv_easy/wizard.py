@@ -609,6 +609,11 @@ def normalize_for_environment(cfg: Config, env: Environment) -> None:
         cfg.data.mode = "packed"
     if cfg.train.infctx and cfg.train.chunk_ctx > cfg.train.ctx_len:
         cfg.train.chunk_ctx = min(2048, cfg.train.ctx_len)
+    # 不满足逐块反传条件的组合自动收敛，避免向导里出现无法启动的配置。
+    if cfg.train.infctx and not cfg.train.infctx_detach:
+        cfg.train.infctx_parallel_backward = False
+    if cfg.dist.mode == "deepspeed":
+        cfg.train.infctx_parallel_backward = False
 
 
 def apply_method_defaults(cfg: Config, method: str, infctx: bool) -> None:
@@ -632,6 +637,7 @@ def apply_method_defaults(cfg: Config, method: str, infctx: bool) -> None:
         cfg.train.chunk_ctx = 2048
         cfg.train.grad_checkpoint = False
         cfg.train.infctx_backward = True
+        cfg.train.infctx_parallel_backward = method == "lora"
         cfg.data.mode = "packed"
         cfg.train.micro_batch_size = min(cfg.train.micro_batch_size, 2)
     else:
@@ -900,6 +906,21 @@ class WizardState:
         return errors
 
 
+def _parallel_backward_label(state: WizardState) -> str | None:
+    cfg = state.cfg
+    if not cfg.train.infctx:
+        return None
+    mode = cfg.dist.mode
+    multi = mode == "ddp" or mode == "deepspeed" or (mode == "auto" and state.env.gpu_count > 1)
+    if not multi:
+        return None
+    if mode == "deepspeed":
+        return "最后统一（DeepSpeed）"
+    if cfg.train.method == "state":
+        return "最后统一（State）"
+    return "逐块（最后 all-reduce）" if cfg.train.infctx_parallel_backward else "最后统一"
+
+
 def config_summary(state: WizardState, compact: bool = False) -> str:
     cfg = state.cfg
     model_path = _short_path(cfg.model.path or "") if compact else (cfg.model.path or "未选择")
@@ -923,6 +944,9 @@ def config_summary(state: WizardState, compact: bool = False) -> str:
             f"学习率      : {cfg.train.lr:g} → {cfg.train.min_lr:g}（{cfg.train.lr_schedule}）",
             f"步数 / 输出 : {steps} / {output}",
         ]
+        parallel = _parallel_backward_label(state)
+        if parallel is not None:
+            lines.append(f"多卡反传    : {parallel}")
         if cfg.train.method == "lora":
             lines.append(f"LoRA        : {state.target_summary()}")
         else:
@@ -942,6 +966,9 @@ def config_summary(state: WizardState, compact: bool = False) -> str:
         f"compile     : {cfg.train.compile} ({cfg.train.compile_mode})",
         f"输出目录    : {output}",
     ]
+    parallel = _parallel_backward_label(state)
+    if parallel is not None:
+        lines.append(f"多卡反传    : {parallel}")
     if cfg.train.method == "lora":
         lines.append(f"LoRA        : {state.target_summary()}")
         lines.append(f"LoRA 参数   : r={cfg.lora.rank}, alpha={cfg.lora.alpha}, dropout={cfg.lora.dropout}")
@@ -2034,9 +2061,16 @@ def _training_fields(state: WizardState) -> list[FormField]:
         ),
         FormField(
             "infctx_backward", "train.infctx_backward", "bool",
-            comment="每块立即反传",
-            help="每个 chunk 立即 backward，显存 O(chunk_ctx)；DDP/DeepSpeed 会自动回退到"
-                 "最后统一反传。",
+            comment="单卡每块立即反传",
+            help="单卡 infctx 每个 chunk 立即 backward，显存 O(chunk_ctx)；"
+                 "多卡是否逐块由下一个字段控制。",
+        ),
+        FormField(
+            "多卡逐块反传", "train.infctx_parallel_backward", "bool",
+            comment="DDP 长文本 O(chunk)",
+            help="DDP + infctx 时每个 chunk 立即反传，只有最后一块触发一次梯度 all-reduce；"
+                 "显存 O(chunk_ctx)，不随 ctx_len 增长。State Tuning 与 DeepSpeed "
+                 "会自动回退到最后统一反传。",
         ),
         FormField(
             "log_every", "train.log_every", "int", minimum=1,
@@ -2674,6 +2708,24 @@ def _home_items(state: WizardState) -> list[HomeItem]:
                  "两列指令和纯文本。项目自带 examples/sharegpt_tiny.json 可以先试。",
         ),
     ]
+    if (
+        state.env.gpu_count > 1
+        and cfg.train.infctx
+        and cfg.train.method == "lora"
+        and cfg.dist.mode != "deepspeed"
+    ):
+        items.append(
+            HomeItem(
+                "choice",
+                "多卡逐块反传",
+                "开启" if cfg.train.infctx_parallel_backward else "关闭",
+                "parallel_backward",
+                comment="DDP 长文本省显存",
+                help="开启后 DDP infctx 每个 chunk 立即反传，只保留当前块的激活，"
+                     "最后一块统一 all-reduce 梯度；显存 O(chunk_ctx)，不随 ctx_len 增长。"
+                     "关闭则所有 chunk 最后统一反传，显存随 ctx_len 增长。",
+            )
+        )
     if cfg.train.method == "lora":
         items.append(
             HomeItem(
@@ -2946,6 +2998,10 @@ def _run_action(
         else:
             state.set_infctx(console.confirm("启用 infctx 长上下文？", cfg.train.infctx))
         return None
+    if action == "parallel_backward":
+        cfg.train.infctx_parallel_backward = not cfg.train.infctx_parallel_backward
+        state.mark_custom("多卡逐块反传已修改")
+        return None
     if action == "backend":
         if console.tty:
             _cycle_choice(state, "backend", 1)
@@ -3126,6 +3182,9 @@ def _cycle_choice(state: WizardState, action: str, direction: int) -> None:
         state.set_method(methods[(current + direction) % len(methods)])
     elif action == "infctx":
         state.set_infctx(not cfg.train.infctx)
+    elif action == "parallel_backward":
+        cfg.train.infctx_parallel_backward = not cfg.train.infctx_parallel_backward
+        state.mark_custom("多卡逐块反传已修改")
     elif action == "backend":
         choices = ["native"] + (["fla"] if state.env.fla_available else [])
         current = choices.index(cfg.model.backend) if cfg.model.backend in choices else 0
@@ -3145,6 +3204,7 @@ def run_wizard(
     no_train: bool = False,
     output: str | None = None,
     welcome: bool = True,
+    infctx_parallel_backward: bool | None = None,
 ) -> int:
     """运行交互式向导；返回进程退出码。"""
     if not non_interactive and sys.stdin.isatty():
@@ -3164,6 +3224,8 @@ def run_wizard(
             state.set_dataset(validate_dataset_path(str(datasets[0])))
     # 推荐模板要在模型信息之后套用，才能按权重大小选 batch。
     apply_preset(state, "recommended")
+    if infctx_parallel_backward is not None:
+        state.cfg.train.infctx_parallel_backward = bool(infctx_parallel_backward)
     state.notice = ""
 
     with Console(non_interactive=non_interactive) as console:
@@ -3205,6 +3267,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--non-interactive", action="store_true", help="分行问答（适合脚本/无 TTY）")
     parser.add_argument("--no-train", action="store_true", help="只生成配置，不启动训练")
     parser.add_argument("--no-welcome", action="store_true", help="跳过欢迎页，直接进入配置")
+    parser.add_argument(
+        "--infctx-parallel-backward",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="DDP + infctx 是否逐块反传（默认 true；仅 LoRA）",
+    )
     parser.add_argument("-o", "--output", default=None, help="配置文件输出路径")
     args = parser.parse_args(argv)
     try:
@@ -3213,6 +3281,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             no_train=args.no_train,
             output=args.output,
             welcome=not args.no_welcome,
+            infctx_parallel_backward=args.infctx_parallel_backward,
         )
     except (WizardCancelled, KeyboardInterrupt):
         print("\n已取消。")

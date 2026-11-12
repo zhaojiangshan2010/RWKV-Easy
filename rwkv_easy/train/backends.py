@@ -104,6 +104,38 @@ def broadcast_object(obj: Any, src: int = 0) -> Any:
     return payload[0]
 
 
+class _HiddenForwardAdapter(nn.Module):
+    """把 ``forward_hidden`` / ``forward_chunk_hidden`` 暴露成 ``forward``。
+
+    DDP / DeepSpeed 只有在调用包装后的 ``forward`` 时才会准备 reducer、
+    参数 gather 与通信 hook；训练循环如果直接调用原始模型的
+    ``forward_hidden``，backward 时梯度根本不会 all-reduce。这个适配层让
+    包装层看到正常的 forward/backward 对，同时保持原始模型引用不变
+    （保存、合并、推理仍然使用未包装的模型）。
+    """
+
+    def __init__(self, model: nn.Module) -> None:
+        super().__init__()
+        self.model = model
+        self._forward_hidden_fn = model.forward_hidden
+        self._forward_chunk_hidden_fn = model.forward_chunk_hidden
+
+    def forward(self, input_ids: torch.Tensor, *args: Any, chunk: bool = False, **kwargs: Any) -> Any:
+        fn = self._forward_chunk_hidden_fn if chunk else self._forward_hidden_fn
+        return fn(input_ids, *args, **kwargs)
+
+    def compile_forward(self, mode: str) -> None:
+        # 只编译真正的模型前向，不编译 DDP / DeepSpeed 的通信包装。
+        hidden = torch.compile(
+            self.model.forward_hidden, dynamic=False, mode=mode
+        )
+        chunk = torch.compile(
+            self.model.forward_chunk_hidden, dynamic=None, mode=mode
+        )
+        self._forward_hidden_fn = hidden
+        self._forward_chunk_hidden_fn = chunk
+
+
 # --------------------------------------------------------------------------- #
 # 后端实现
 # --------------------------------------------------------------------------- #
@@ -122,6 +154,29 @@ class SingleBackend:
         self.dist = dist
         self.scaler: Any = None
         self.grad_clip: float = 0.0
+        self._forward_hidden_fn = model.forward_hidden
+        self._forward_chunk_hidden_fn = model.forward_chunk_hidden
+
+    # -- 前向 ---------------------------------------------------------- #
+    def forward_hidden(self, input_ids: torch.Tensor, *args: Any, **kwargs: Any) -> Any:
+        return self._forward_hidden_fn(input_ids, *args, **kwargs)
+
+    def forward_chunk_hidden(self, input_ids: torch.Tensor, *args: Any, **kwargs: Any) -> Any:
+        return self._forward_chunk_hidden_fn(input_ids, *args, **kwargs)
+
+    def compile_forward(self, mode: str) -> None:
+        hidden = torch.compile(
+            self.raw_model.forward_hidden, dynamic=False, mode=mode
+        )
+        chunk = torch.compile(
+            self.raw_model.forward_chunk_hidden, dynamic=None, mode=mode
+        )
+        self._forward_hidden_fn = hidden
+        self._forward_chunk_hidden_fn = chunk
+
+    def chunk_sync_context(self, is_last_chunk: bool) -> contextlib.AbstractContextManager:
+        # 单卡没有跨进程通信，不需要 no_sync。
+        return contextlib.nullcontext()
 
     # -- 训练动作 ------------------------------------------------------ #
     def backward(self, loss: torch.Tensor) -> None:
@@ -176,8 +231,9 @@ class DDPBackend(SingleBackend):
     ) -> None:
         self.raw_model = model
         is_cuda = next(model.parameters()).is_cuda
+        self.adapter = _HiddenForwardAdapter(model)
         self.model = nn.parallel.DistributedDataParallel(
-            model,
+            self.adapter,
             device_ids=[dist.local_rank] if is_cuda else None,
             output_device=dist.local_rank if is_cuda else None,
             find_unused_parameters=find_unused_parameters,
@@ -189,11 +245,83 @@ class DDPBackend(SingleBackend):
         self.scaler: Any = None
         self.grad_clip: float = 0.0
         self.grad_accum = max(1, int(grad_accum))
+        self._manual_sync = False
+        self._sync_now = True
+        self._manual_sync_pending = False
+
+    # -- 前向 ---------------------------------------------------------- #
+    def forward_hidden(self, input_ids: torch.Tensor, *args: Any, **kwargs: Any) -> Any:
+        # 必须走 DDP 包装层：DDP.forward 会 prepare reducer，backward 时才 all-reduce。
+        return self.model(input_ids, *args, chunk=False, **kwargs)
+
+    def forward_chunk_hidden(self, input_ids: torch.Tensor, *args: Any, **kwargs: Any) -> Any:
+        return self.model(input_ids, *args, chunk=True, **kwargs)
+
+    def compile_forward(self, mode: str) -> None:
+        self.adapter.compile_forward(mode)
+
+    def chunk_sync_context(self, is_last_chunk: bool) -> contextlib.AbstractContextManager:
+        """infctx 逐块反传：除最后一块外都跳过 all-reduce。
+
+        外层 ``sync_context`` 负责梯度累积边界；这里只处理“同一次
+        micro-batch 内部的多个 chunk”。最后一块同步后，DDP 会把前面所有
+        chunk 累积的梯度一次性 all-reduce。
+        """
+        if is_last_chunk:
+            return contextlib.nullcontext()
+        return self.model.no_sync()
 
     def sync_context(self, micro_step: int) -> contextlib.AbstractContextManager:
-        if self.grad_accum > 1 and (micro_step + 1) % self.grad_accum != 0:
+        self._sync_now = self.grad_accum <= 1 or (micro_step + 1) % self.grad_accum == 0
+        if not self._sync_now:
             return self.model.no_sync()
         return contextlib.nullcontext()
+
+    # -- 延迟 infctx 路径的手动同步 ------------------------------------- #
+    def enable_manual_grad_sync(self) -> None:
+        """DDP + infctx 延迟反传：不经过 DDP.forward，需要手动 all-reduce。
+
+        多块一次 backward 时，DDP 的 reducer 没有稳定的 forward/backward 配对；
+        这条路径改为原始模型逐块前向、一次 backward，再在梯度累积边界手动
+        all-reduce 所有可训练参数。
+        """
+        self._manual_sync = True
+
+    def _all_reduce_grads(self) -> None:
+        if not torch.distributed.is_initialized() or self.dist.world_size <= 1:
+            return
+        grads = [
+            parameter.grad
+            for parameter in self.raw_model.parameters()
+            if parameter.requires_grad and parameter.grad is not None
+        ]
+        if not grads:
+            return
+        for grad in grads:
+            torch.distributed.all_reduce(grad, op=torch.distributed.ReduceOp.SUM)
+            grad.div_(self.dist.world_size)
+
+    def backward(self, loss: torch.Tensor) -> None:
+        if self._manual_sync and self.scaler is not None:
+            raise RuntimeError(
+                "DDP 延迟 infctx 暂不支持 fp16 GradScaler：各 rank 的缩放因子可能不同，"
+                "手动 all-reduce 会得到错误梯度。请改用 bf16，或开启 "
+                "train.infctx_parallel_backward。"
+            )
+        super().backward(loss)
+        if self._manual_sync:
+            if self._sync_now:
+                self._all_reduce_grads()
+                self._manual_sync_pending = False
+            else:
+                self._manual_sync_pending = True
+
+    def step(self) -> bool:
+        # 最后一个 micro-batch 恰好没有可训练 token 时，不能让累积梯度未同步就 step。
+        if self._manual_sync and self._manual_sync_pending:
+            self._all_reduce_grads()
+            self._manual_sync_pending = False
+        return super().step()
 
     def unwrap(self) -> nn.Module:
         return self.raw_model
@@ -213,6 +341,24 @@ class DeepSpeedBackend:
         self.raw_model = raw_model
         self.scaler: Any = None
         self.grad_clip: float = 0.0  # 由 DeepSpeed 的 gradient_clipping 负责
+
+    # -- 前向 ---------------------------------------------------------- #
+    def forward_hidden(self, input_ids: torch.Tensor, *args: Any, **kwargs: Any) -> Any:
+        # 走 engine.forward，ZeRO-3 的参数 gather / activation checkpoint 才会生效。
+        return self.engine(input_ids, *args, chunk=False, **kwargs)
+
+    def forward_chunk_hidden(self, input_ids: torch.Tensor, *args: Any, **kwargs: Any) -> Any:
+        return self.engine(input_ids, *args, chunk=True, **kwargs)
+
+    def compile_forward(self, mode: str) -> None:
+        compile_fn = getattr(self.engine.module, "compile_forward", None)
+        if compile_fn is None:
+            raise RuntimeError("DeepSpeed 包装层不支持 compile_forward")
+        compile_fn(mode)
+
+    def chunk_sync_context(self, is_last_chunk: bool) -> contextlib.AbstractContextManager:
+        # DeepSpeed 暂不支持逐块反传；这个方法只用于统一接口。
+        return contextlib.nullcontext()
 
     def backward(self, loss: torch.Tensor) -> None:
         self.engine.backward(loss)

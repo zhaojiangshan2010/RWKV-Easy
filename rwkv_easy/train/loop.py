@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import math
 import time
 from dataclasses import dataclass
@@ -209,12 +210,26 @@ class Trainer:
                 self.backend_kind, model, self.optimizer, self.scheduler, dist, cfg, self.log
             )
 
+        backend_kind = getattr(self.backend, "kind", "single")
+        self._ddp_delayed_infctx = (
+            backend_kind == "ddp" and cfg.train.infctx and not self._parallel_infctx_enabled()
+        )
+        if self._ddp_delayed_infctx:
+            enable_manual = getattr(self.backend, "enable_manual_grad_sync", None)
+            if enable_manual is not None:
+                enable_manual()
+
+        # 训练前向必须经过 backend：
+        # - single：backend 直接转发到原始模型；
+        # - DDP：走 DDP.forward，DDP 才会在 backward 时 all-reduce 梯度；
+        # - DeepSpeed：走 engine.forward，ZeRO 的参数 gather 才会生效。
+        self._forward_hidden = self.backend.forward_hidden
+        self._forward_chunk_hidden = self.backend.forward_chunk_hidden
+
         # torch.compile：
         # - fla：编译训练真正调用的 forward_hidden（整段/分块），+20%；
-        # - native：整模型编译会把 12 层 × N 块全部展开，首次编译可能 >9 分钟；
+        # - native：整模型编译会把 12 层×N 块展开，编译极慢；
         #   只编译 WKV 的 `_chunk`（单块图）即可，+14%。
-        self._forward_hidden = self.model.forward_hidden
-        self._forward_chunk_hidden = self.model.forward_chunk_hidden
         if cfg.train.compile:
             backend_obj = getattr(self.model, "backend", None)
             if (
@@ -234,23 +249,31 @@ class Trainer:
                     self.log.warning("torch.compile（native WKV）失败（%s），继续 eager。", exc)
             else:
                 try:
-                    self._forward_hidden = torch.compile(
-                        self.model.forward_hidden,
-                        dynamic=False,
-                        mode=cfg.train.compile_mode,
-                    )
-                    # infctx 最后一块可能更短，用动态 shape。
-                    self._forward_chunk_hidden = torch.compile(
-                        self.model.forward_chunk_hidden,
-                        dynamic=None,
-                        mode=cfg.train.compile_mode,
-                    )
+                    # 编译适配层内部的模型前向；DDP / DeepSpeed 的通信包装不参与编译。
+                    self.backend.compile_forward(cfg.train.compile_mode)
                     if is_main_process():
                         self.log.info("已启用 torch.compile（训练前向，首次 step 可能较慢）")
                 except Exception as exc:  # pragma: no cover - 依平台而定
-                    self._forward_hidden = self.model.forward_hidden
-                    self._forward_chunk_hidden = self.model.forward_chunk_hidden
                     self.log.warning("torch.compile 失败（%s），继续使用 eager。", exc)
+
+        # 多卡 infctx 的 backward 策略：让日志明确当前走哪条路径，避免“以为省显存”。
+        if (
+            cfg.train.infctx
+            and backend_kind in ("ddp", "deepspeed")
+            and is_main_process()
+        ):
+            if (
+                backend_kind == "ddp"
+                and cfg.train.infctx_parallel_backward
+                and cfg.train.method == "lora"
+            ):
+                self.log.info("infctx 多卡：逐块反传（最后一块 all-reduce，显存 ∝ chunk_ctx）")
+            elif backend_kind == "ddp" and cfg.train.method == "state":
+                self.log.info("infctx 多卡：State Tuning 回退到最后统一反传（手动 all-reduce）")
+            elif self._ddp_delayed_infctx:
+                self.log.info("infctx 多卡：最后统一反传（手动 all-reduce，显存随 ctx_len 增长）")
+            else:
+                self.log.info("infctx 多卡：最后统一反传（显存随 ctx_len 增长）")
 
         # fp16 的 GradScaler（DDP / 单卡）
         self.scaler = None
@@ -275,6 +298,17 @@ class Trainer:
         self._tokens_processed = 0
         self._last_log_time = time.time()
         self._last_log_tokens = 0
+
+    def _parallel_infctx_enabled(self) -> bool:
+        """DDP + LoRA + infctx 是否逐块反传（State / 关闭开关时走延迟路径）。"""
+        train = self.cfg.train
+        return bool(
+            train.infctx
+            and train.infctx_backward
+            and train.infctx_detach
+            and train.infctx_parallel_backward
+            and train.method == "lora"
+        )
 
     # ------------------------------------------------------------------ #
     # 数据
@@ -360,15 +394,25 @@ class Trainer:
             dtype=self.model.emb.weight.dtype,
         )
 
-        # 单进程且开启 infctx_backward 时，每个 chunk 立即反传：
-        # 激活只保留当前块，显存与 ctx_len 无关（真正的 O(chunk_ctx)）。
-        # DDP/DeepSpeed 需要特殊的梯度同步，暂走旧的“最后统一 backward”路径。
+        # 单进程 / DDP(LoRA) 可以逐块立即反传：激活只保留当前块，
+        # 显存与 ctx_len 无关（真正的 O(chunk_ctx)）。
+        # DDP 的每个 chunk 都是独立的 forward/backward 对，除最后一块外放在
+        # no_sync 里；最后一块触发一次 all-reduce，把前面所有 chunk 累积的
+        # 梯度一起同步。DeepSpeed 与 State Tuning 暂不支持逐块路径。
+        backend_kind = getattr(self.backend, "kind", "single")
+        parallel_backward = backend_kind == "single" or (
+            backend_kind == "ddp" and self._parallel_infctx_enabled()
+        )
         per_chunk_backward = (
             self.model.training
             and cfg.infctx_backward
             and cfg.infctx_detach
-            and getattr(self.backend, "kind", "single") == "single"
+            and parallel_backward
         )
+        # DDP 的延迟路径不能依赖“多次 forward 后一次 backward”的 DDP reducer；
+        # 用原始模型逐块前向，最后由 DDPBackend 手动 all-reduce 梯度。
+        delayed_ddp = backend_kind == "ddp" and not per_chunk_backward
+        forward_chunk = self.model.forward_chunk_hidden if delayed_ddp else self._forward_chunk_hidden
         total_tokens = int((labels != IGNORE_INDEX).sum().item()) if per_chunk_backward else 0
         if per_chunk_backward and total_tokens == 0:
             return input_ids.float().sum() * 0.0, 0, False
@@ -380,36 +424,54 @@ class Trainer:
             chunk_ids = input_ids[:, start:end]
             chunk_labels = labels[:, start:end]
             chunk_mask = attention_mask[:, start:end] if attention_mask is not None else None
+            is_last_chunk = end >= total
 
-            use_checkpoint = cfg.grad_checkpoint and self.model.training
-            if use_checkpoint:
-                hidden, shift_att, shift_ffn, wkv = checkpoint_fn(
-                    self._forward_chunk_hidden,
-                    chunk_ids,
-                    state.shift_att,
-                    state.shift_ffn,
-                    state.wkv,
-                    chunk_mask,
-                    use_reentrant=False,
-                )
-            else:
-                hidden, shift_att, shift_ffn, wkv = self._forward_chunk_hidden(
-                    chunk_ids, state.shift_att, state.shift_ffn, state.wkv, chunk_mask
-                )
+            # DDP 下每个 chunk 都有 forward，就必须有对应的 backward；
+            # 否则下一次 forward 的 prepare_for_backward 会和未完成的 reducer 冲突。
+            chunk_context = (
+                self.backend.chunk_sync_context(is_last_chunk)
+                if per_chunk_backward and backend_kind == "ddp"
+                else contextlib.nullcontext()
+            )
+            with chunk_context:
+                use_checkpoint = cfg.grad_checkpoint and self.model.training
+                if use_checkpoint:
+                    hidden, shift_att, shift_ffn, wkv = checkpoint_fn(
+                        forward_chunk,
+                        chunk_ids,
+                        state.shift_att,
+                        state.shift_ffn,
+                        state.wkv,
+                        chunk_mask,
+                        use_reentrant=False,
+                    )
+                else:
+                    hidden, shift_att, shift_ffn, wkv = forward_chunk(
+                        chunk_ids, state.shift_att, state.shift_ffn, state.wkv, chunk_mask
+                    )
 
-            chunk_loss, chunk_tokens = self._cross_entropy(hidden, chunk_labels)
-            if per_chunk_backward:
-                if chunk_tokens > 0:
-                    weight = chunk_tokens / total_tokens
-                    # grad_accum 的缩放由这里负责，外层不再 backward。
-                    contribution = chunk_loss * weight / self.grad_accum
-                    # State Tuning 的后续块可能没有任何可训练输入（time_state
-                    # 只在第一块作为初始状态），此时没有梯度可反传。
-                    if contribution.requires_grad:
-                        self.backend.backward(contribution)
-                    weighted_loss = weighted_loss + chunk_loss.detach() * weight
-            elif chunk_tokens > 0:
-                total_loss = chunk_loss * chunk_tokens if total_loss is None else total_loss + chunk_loss * chunk_tokens
+                chunk_loss, chunk_tokens = self._cross_entropy(hidden, chunk_labels)
+                if per_chunk_backward:
+                    contribution: torch.Tensor | None = None
+                    if chunk_tokens > 0:
+                        weight = chunk_tokens / total_tokens
+                        # grad_accum 的缩放由这里负责，外层不再 backward。
+                        contribution = chunk_loss * weight / self.grad_accum
+                        weighted_loss = weighted_loss + chunk_loss.detach() * weight
+                    elif backend_kind == "ddp":
+                        # 整块都是 prompt（label=-100）时也要走一次零梯度 backward，
+                        # 保持 DDP 的 forward/backward 配对。
+                        contribution = chunk_loss * 0.0
+                    if contribution is not None:
+                        if contribution.requires_grad:
+                            self.backend.backward(contribution)
+                        elif backend_kind == "ddp":
+                            raise RuntimeError(
+                                "DDP infctx 逐块反传遇到没有可训练梯度的 chunk；"
+                                "请关闭 train.infctx_parallel_backward，或改用单卡/最后统一反传。"
+                            )
+                elif chunk_tokens > 0:
+                    total_loss = chunk_loss * chunk_tokens if total_loss is None else total_loss + chunk_loss * chunk_tokens
 
             if cfg.infctx_detach:
                 state = ModelState(shift_att.detach(), shift_ffn.detach(), wkv.detach())

@@ -167,10 +167,10 @@ for chunk in split(ids, labels, chunk_ctx):
     logits, state = forward_chunk(chunk, state)
     loss_k = CE(logits, labels_k)
 
-    if infctx_backward:               # 默认；单进程
+    if per_chunk_backward:            # 单卡；或 DDP + LoRA + infctx_parallel_backward
         backward(loss_k * tokens_k / total_tokens / grad_accum)
         state = state.detach()        # 立刻释放本块激活
-    else:                             # DDP / DeepSpeed / 显存充足
+    else:                             # DeepSpeed / State + DDP / 显存充足
         total_loss += loss_k * tokens_k
         state = state.detach() if infctx_detach
 backward(total_loss / total_tokens)   # 仅旧路径
@@ -184,8 +184,12 @@ backward(total_loss / total_tokens)   # 仅旧路径
 3. **loss 按 token 加权合并**，最终值等价于整段 mean CE。
 4. **默认每块立即 backward**（`train.infctx_backward: true`）：激活只保留当前块，
    显存真正是 `O(chunk_ctx)`。0.1B 可训 32K 上下文（3.4 GiB）。
-   DDP / DeepSpeed 暂时回退到“所有块 loss 累加、最后统一 backward”，
-   显存会随 `ctx_len` 增长。
+   DDP + LoRA 默认也逐块反传（`train.infctx_parallel_backward: true`）：
+   每个 chunk 是独立的 forward/backward 对，除最后一块外用 `no_sync()`；
+   最后一块触发一次梯度 all-reduce，显存同样是 `O(chunk_ctx)`。
+   DeepSpeed 与 State Tuning + DDP 回退到“所有块 loss 累加、最后统一 backward”；
+   DDP 的回退路径使用原始模型逐块前向 + 一次 backward + 手动 all-reduce，
+   显存随 `ctx_len` 增长。
 5. **detach 是默认**：块间不反传，等价于截断 BPTT。设 `infctx_detach: false`
    会关闭 per-chunk backward（否则图已被释放），走全量 BPTT，显存成倍增长。
 6. **梯度检查点可选**：per-chunk backward 已经限制了激活，通常不再需要
@@ -296,8 +300,14 @@ WKV 内部始终 fp32。LoRA 的 A/B 在 `bf16-full` 下仍然保持 fp32，
 | 方式 | 实现 | 备注 |
 |---|---|---|
 | 单卡 | 直接训练 | |
-| DDP | `torch.nn.parallel.DistributedDataParallel` | 梯度累积时用 `no_sync()` 跳过中间 all-reduce |
-| DeepSpeed | `deepspeed.initialize` | 只把可训练参数交给优化器；ZeRO-3 用 `GatheredParameters` 汇总保存 |
+| DDP | `torch.nn.parallel.DistributedDataParallel` | 前向经 `_HiddenForwardAdapter` 走 `DDP.forward`；梯度累积/逐块反传用 `no_sync()` 跳过中间 all-reduce |
+| DeepSpeed | `deepspeed.initialize` | 前向经适配层走 `engine.forward`；只把可训练参数交给优化器；ZeRO-3 用 `GatheredParameters` 汇总保存 |
+
+> **关键点**：训练循环不能直接调用原始模型的 `forward_hidden`。DDP 只有在
+> `DDP.forward` 中才会 `prepare_for_backward`，绕过它会导致 backward 时
+> **梯度完全不 all-reduce**（各卡各训，静默错误）。`_HiddenForwardAdapter`
+> 把 `forward_hidden` / `forward_chunk_hidden` 暴露成正常的 `forward`，
+> DDP / DeepSpeed 包装它，保存与合并仍然使用原始模型。
 
 启动器（`launcher.py`）在检测到多卡时，用 `subprocess` 拉起 N 个进程并设置
 `RANK/WORLD_SIZE/MASTER_ADDR/MASTER_PORT`。不用 `torchrun` 是为了绕开

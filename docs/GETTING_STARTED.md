@@ -241,6 +241,11 @@ configs/debug_cpu.yaml                # 随机小模型，CPU 冒烟
 configs/self_identity_lora.yaml       # CPU 过拟合 demo
 ```
 
+**多卡 + infctx + LoRA**：`train.infctx_parallel_backward: true`（默认）会逐块
+反传，只有最后一块 all-reduce，显存 O(chunk_ctx)；设 `false` 则所有块最后统一
+反传，显存随 `ctx_len` 增长。State Tuning + 多卡、DeepSpeed 暂不支持逐块路径，
+会自动回退到最后统一反传。
+
 ### LoRA 与 State 的区别
 
 |  | LoRA | State Tuning |
@@ -333,7 +338,7 @@ rwkv-easy train -c configs/lora_sharegpt_infctx.yaml \
 WKV 算子是纯 PyTorch 写的，所以整条链路都能在 CPU 上验证。三条命令：
 
 ```bash
-python -m pytest tests -q                            # 133 个（CPU 上 128 passed + 5 fla skipped）
+python -m pytest tests -q                            # 139 个（CPU 上 134 passed + 5 fla skipped）
 rwkv-easy selftest --full                            # lora/state × infctx on/off × fp32/bf16
 rwkv-easy train -c configs/debug_cpu.yaml             # 随机小模型，20 步
 ```

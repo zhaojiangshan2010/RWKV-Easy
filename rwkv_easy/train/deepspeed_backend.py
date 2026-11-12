@@ -19,7 +19,7 @@ import torch
 import torch.nn as nn
 
 from ..runtime import is_main_process
-from .backends import DeepSpeedBackend, DistInfo
+from .backends import DeepSpeedBackend, DistInfo, _HiddenForwardAdapter
 
 __all__ = ["build_deepspeed_config", "create_deepspeed_backend", "gather_trainable_state_dict"]
 
@@ -119,8 +119,11 @@ def create_deepspeed_backend(
     # `No module named 'mpi4py'`。这里先建一个单进程 PG，再让 DS 复用。
     if not torch.distributed.is_initialized():
         _init_single_process_group()
+    # 与 DDP 同理：必须让 engine.forward 参与前向，否则 ZeRO 的参数 gather /
+    # activation checkpoint 上下文不会建立。adapter 只持有原始模型的引用。
+    adapter = _HiddenForwardAdapter(model)
     engine, ds_optimizer, _, ds_scheduler = deepspeed.initialize(
-        model=model,
+        model=adapter,
         model_parameters=trainable,
         optimizer=optimizer,
         lr_scheduler=scheduler,

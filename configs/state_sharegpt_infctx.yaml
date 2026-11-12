@@ -33,7 +33,8 @@ train:
   precision: bf16-full                  # 基座 bf16，time_state 仍是 fp32
   grad_checkpoint: false                # 每块即时反传后通常不需要
   infctx_detach: true
-  infctx_backward: true                 # 每块立即 backward，显存 ∝ chunk_ctx
+  infctx_backward: true                 # 单卡：每块立即 backward
+  infctx_parallel_backward: false       # State + 多卡仍走最后统一反传
   compile: true
   compile_mode: default
   log_every: 10

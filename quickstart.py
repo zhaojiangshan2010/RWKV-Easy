@@ -23,6 +23,7 @@
     --reinstall      已有 torch 也重新安装
     --yes            自动确认可选依赖（rwkv-fla）
     --non-interactive / --no-train / -o  透传给向导
+    --(no-)infctx-parallel-backward      透传给向导：DDP + infctx 是否逐块反传
 """
 
 from __future__ import annotations
@@ -86,6 +87,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--yes", action="store_true", help="自动确认可选依赖")
     parser.add_argument("--non-interactive", action="store_true", help="向导使用分行问答")
     parser.add_argument("--no-train", action="store_true", help="只生成配置，不训练")
+    parser.add_argument(
+        "--infctx-parallel-backward",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="DDP + infctx 是否逐块反传（默认 true；仅 LoRA）",
+    )
     parser.add_argument("-o", "--output", default=None, help="配置文件输出路径")
     return parser.parse_args(argv)
 
@@ -295,6 +302,12 @@ def _wizard_command(args: argparse.Namespace) -> list[str]:
         cmd.append("--non-interactive")
     if args.no_train:
         cmd.append("--no-train")
+    if args.infctx_parallel_backward is not None:
+        cmd.append(
+            "--infctx-parallel-backward"
+            if args.infctx_parallel_backward
+            else "--no-infctx-parallel-backward"
+        )
     if args.output:
         cmd.extend(["-o", args.output])
     return cmd

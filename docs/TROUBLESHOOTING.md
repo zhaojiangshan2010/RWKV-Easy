@@ -231,16 +231,18 @@ infctx 需要定长、无 padding 的样本。改 `data.mode: packed`，或关�
 **infctx 比非 infctx 慢很多**
 - 先确认 `chunk_ctx` 是不是太小。256 会产生大量串行小块；0.1B/0.4B 建议
   2048（8K ctx 下 32.5K tok/s，已经接近整段训练）；
-- 确认 `train.infctx_backward: true`，并且不是 DDP/DeepSpeed（这两个会回退
-  到旧的延迟 backward，显存和速度都更差）；
+- 单卡确认 `train.infctx_backward: true`；DDP 确认
+  `train.infctx_parallel_backward: true`（默认）；
+- DeepSpeed 与 State Tuning + DDP 不支持逐块反传，会回退到延迟 backward；
 - `grad_checkpoint: true` 在 per-chunk backward 下通常只会变慢（0.1B 实测
   23.7K vs 32.5K），显存充足时关掉。
 
 **显存没有明显下降 / 32K 还是 OOM**
-- 检查 `train.infctx_backward` 是否为 `true`，以及 `infctx_detach` 是否为
-  `true`；只开 infctx 但把所有 loss 留到最后 backward，显存仍会随 `ctx_len`
-  线性增长；
-- DDP/DeepSpeed 目前自动回退旧路径，长上下文会 OOM；单卡先验证；
+- 检查 `train.infctx_backward`（单卡）或 `train.infctx_parallel_backward`
+  （DDP）是否为 `true`，以及 `infctx_detach` 是否为 `true`；只开 infctx
+  但把所有 loss 留到最后 backward，显存仍会随 `ctx_len` 线性增长；
+- DeepSpeed 与 State Tuning + DDP 会自动回退到最后统一反传，长上下文仍可能
+  OOM；LoRA + DDP 请确认 `infctx_parallel_backward: true`；
 - 降低 `chunk_ctx`（2048 → 1024）或 `micro_batch_size`；
 - 实在需要更大 batch 时再开 `grad_checkpoint: true`。
 

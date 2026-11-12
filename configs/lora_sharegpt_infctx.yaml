@@ -33,7 +33,8 @@ train:
   precision: bf16-full                  # 基座 bf16，LoRA 参数仍是 fp32
   grad_checkpoint: false                # 每块即时反传后，通常不再需要重计算
   infctx_detach: true                   # 块间截断梯度（省显存）
-  infctx_backward: true                 # 每块立即 backward，显存 ∝ chunk_ctx
+  infctx_backward: true                 # 单卡：每块立即 backward，显存 ∝ chunk_ctx
+  infctx_parallel_backward: true        # DDP：每块反传，最后一块 all-reduce
   compile: true                         # 编译训练前向；首次启动慢
   compile_mode: default
   log_every: 10

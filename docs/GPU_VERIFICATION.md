@@ -36,7 +36,7 @@ CUDA 13.0、cuDNN 9.24、**triton 3.8.0**、DeepSpeed 0.19.8、
 - State + infctx 由于只有第一块需要反传，达到 **72.6K tok/s（2.7 GiB）**。
 - native + softplus 在真实权重上仍只有约 130 tok/s：log-decay 在 -2～-7，
   块长会被压到 8 左右。CUDA + softplus 请直接用 fla。
-- 全量测试 **133 个**（GPU 上全跑，CPU 上 5 个 fla 测试跳过）。
+- 全量测试 **139 个**（GPU 上全跑，CPU 上 5 个 fla 测试跳过）。
 
 ---
 
@@ -82,7 +82,7 @@ CUDA 13.0、cuDNN 9.24、**triton 3.8.0**、DeepSpeed 0.19.8、
 | DeepSpeed ZeRO-2（单卡） | fla，ctx512/bsz8，compile | 28.6K tok/s，3.7 GiB |
 | DeepSpeed ZeRO-2（单卡） | fla，sample ctx64/bsz2 | 首次编译 ~42s，之后正常，1.5 GiB |
 | 自我认知过拟合 | native，sample ctx64/bsz2，20 步 | 秒级，loss 5.25 → 0.001 |
-| 全量测试（CPU + GPU） | 133 个测试 | 约 80–85 秒 |
+| 全量测试（CPU + GPU） | 139 个测试 | 约 80–85 秒 |
 
 > **只看同配置对比**：不同 `ctx_len` / `chunk_ctx` / `micro_batch_size` 的绝对
 > tok/s 不可直接比较。早期表格里 State 的 fla 行用了 `sample ctx64/bsz2`
@@ -270,3 +270,45 @@ python -m pytest tests -o addopts="" -q
 - GC on：PEFT 快 7–34%；GC off + bsz≥8：EASY 快 6–9%。
 - 最佳配置：EASY 44.2K（bsz32/no-GC） vs PEFT 40.9K（bsz32/no-GC）。
 - 图表见 README 的「性能」一节；完整公平性说明见本节上文。
+
+---
+
+## 8. 多卡路径验证（2026-11-12，0.5.0）
+
+环境：新的 Virtaicloud 实例，单卡 `B1.gpu.large`（23.3 GiB，82 SM，cc 8.6），
+torch 2.14.1+cu130、DeepSpeed 0.19.8。这台机器只有一张 GPU，所以 **DDP 用
+2 进程 CPU gloo 验证梯度语义**；NCCL 多卡仍未实测。
+
+### 8.1 修复前：DDP 梯度没有同步
+
+用项目自己的 `DDPBackend` + 原始模型前向（修复前 Trainer 的调用方式）：
+rank0 梯度 `[1.0, 0.0]`、rank1 `[0.0, 1.0]`，各卡保留自己的梯度。
+正常 DDP 应为两边 `[0.5, 0.5]`。根因是绕过了 `DDP.forward`，reducer 没有
+`prepare_for_backward`。
+
+### 8.2 修复后
+
+`_HiddenForwardAdapter` 让 DDP / DeepSpeed 走包装层 forward：
+
+| 场景 | 两进程梯度 |
+|---|---|
+| 普通 DDP | `[0.5, 0.5]`（正确平均） |
+| infctx 2 chunk，最后一个同步 | `[1.0, 1.0]`（两个 chunk 求和后平均） |
+| grad_accum=2 × 2 chunk 嵌套 | `[2.0, 2.0]`（4 次反传后只同步一次） |
+
+DDP infctx 端到端（2 进程 CPU、tiny 模型、4 步）：
+`infctx_parallel_backward: true` 日志显示“逐块反传（最后一块 all-reduce）”，
+`false` 显示“最后统一反传”；两种路径都能保存 adapter 并导出 `merged.pth`。
+
+### 8.3 DeepSpeed 单卡复测
+
+| 场景 | 配置 | 结果 |
+|---|---|---|
+| 非 infctx | ZeRO-2，tiny 随机模型，2 步 | 1.0 GiB，merged.pth 正常 |
+| infctx（最后统一反传） | ZeRO-2，chunk32/ctx64，`infctx_parallel_backward=false`，2 步 | 0.8 GiB，merged.pth 正常 |
+
+这两项只验证“engine.forward 接入正确、能跑通”，不是性能数字。
+**DeepSpeed 多卡、ZeRO-3、NCCL 多卡仍未验证。**
+
+全量测试 **139 个**：本地 CPU 134 passed + 5 fla skipped；远程 GPU 全跑通过；
+远程 2 进程 DDP 测试也通过。

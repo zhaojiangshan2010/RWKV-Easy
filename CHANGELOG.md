@@ -1,5 +1,46 @@
 # 变更记录
 
+## 0.5.0 — 2026-11-12
+
+多卡 DDP 修复 + infctx 逐块反传。
+
+### 修复
+
+- **DDP 梯度不同步（严重）**：Trainer 之前直接调用原始模型的
+  `forward_hidden`，绕过了 `DDP.forward`，autograd hook 从未准备 reducer，
+  backward 时梯度不会 all-reduce。现在 DDP / DeepSpeed 都通过
+  `_HiddenForwardAdapter` 走包装层的 forward；两进程 gloo 实测普通 DDP
+  梯度从各卡 `[1,0]/[0,1]` 修正为两边 `[0.5,0.5]`。
+- **DeepSpeed 前向**：改为 `engine.forward`，ZeRO-2 单卡非 infctx / infctx
+  均复测通过；ZeRO-3 未验证。
+- **DDP 延迟 infctx 路径**：不再依赖“多次 forward 后一次 backward”的 DDP
+  reducer；改为原始模型逐块前向、一次 backward，再在梯度累积边界手动
+  all-reduce。fp16 GradScaler 下直接报错，避免各 rank 缩放因子不同导致错误。
+- `torch.compile` 在 DDP/DeepSpeed 下改为编译适配层内部的模型前向，
+  不编译通信包装。
+
+### 新增
+
+- **`train.infctx_parallel_backward`**（默认 `true`）：DDP + LoRA + infctx
+  时每个 chunk 立即 backward，除最后一块外都包在 `no_sync()` 里；最后一块
+  触发一次梯度 all-reduce。显存 O(chunk_ctx)，不再随 `ctx_len` 增长。
+  设 `false` 可回退到“所有块最后统一反传”。
+- 配置校验：逐块反传要求 `infctx_detach: true`；DeepSpeed + 该字段为 true
+  直接报错；State Tuning + DDP 给出警告并自动回退。
+- 向导：多卡 + infctx + LoRA 时首页出现「多卡逐块反传」开关；高级设置新增
+  对应字段与完整说明；摘要显示“逐块（最后 all-reduce）/ 最后统一”；
+  `长上下文 LoRA` 模板默认开启，`State` 模板默认关闭。
+- `lora_sharegpt_infctx.yaml` / `state_sharegpt_infctx.yaml` /
+  `template_config()` 补上该字段。
+- 新增两进程梯度一致性测试：普通 DDP、infctx 逐块、梯度累积 × 逐块嵌套；
+  新增 DDP infctx 两种路径的端到端测试与配置校验测试。
+
+### 测试
+
+- **139 个测试**通过（CPU 134 passed + 5 fla skipped），本地与远程 GPU 均通过。
+- 远程另跑了 DeepSpeed 单卡非 infctx（2 步，1.0 GiB）与 infctx 最后统一反传
+  （2 步，0.8 GiB）冒烟；**NCCL 多卡与 DeepSpeed 多卡仍未实测**。
+
 ## 0.4.0 — 2026-11-12
 
 一键向导 TUI 重做：配置模板、参数注释与新手引导。
@@ -29,7 +70,7 @@
 
 ### 测试
 
-- 133 个测试通过（CPU 上 128 passed + 5 fla skipped）；新增模板、字段注释、
+- 139 个测试通过（CPU 上 134 passed + 5 fla skipped）；新增模板、字段注释、
   中文宽度/折行、首页说明覆盖测试。
 
 ### 文档

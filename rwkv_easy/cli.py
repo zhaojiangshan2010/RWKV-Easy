@@ -136,6 +136,12 @@ def build_parser() -> argparse.ArgumentParser:
     wiz.add_argument("--non-interactive", action="store_true", help="分行问答（无 TTY / 脚本）")
     wiz.add_argument("--no-train", action="store_true", help="只生成配置，不启动训练")
     wiz.add_argument("--no-welcome", action="store_true", help="跳过欢迎页，直接进入配置")
+    wiz.add_argument(
+        "--infctx-parallel-backward",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="DDP + infctx 是否逐块反传（默认 true；仅 LoRA）",
+    )
     wiz.add_argument("-o", "--output", default=None, help="配置文件输出路径")
 
     return parser
@@ -252,6 +258,7 @@ def cmd_wizard(args: argparse.Namespace) -> int:
             no_train=bool(args.no_train),
             output=args.output,
             welcome=not bool(getattr(args, "no_welcome", False)),
+            infctx_parallel_backward=getattr(args, "infctx_parallel_backward", None),
         )
     except (WizardCancelled, KeyboardInterrupt):
         print("\n已取消。")

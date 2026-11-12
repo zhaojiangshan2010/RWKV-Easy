@@ -78,6 +78,41 @@ def test_validation_chunk_larger_than_ctx(tmp_path, tiny_checkpoint, tiny_shareg
     assert "chunk_ctx" in str(exc.value)
 
 
+def test_validation_parallel_infctx_requires_detach(tmp_path, tiny_checkpoint, tiny_sharegpt):
+    cfg = build_config(
+        tmp_path,
+        tiny_checkpoint(),
+        tiny_sharegpt,
+        {
+            "train": {
+                "infctx": True,
+                "infctx_detach": False,
+                "infctx_parallel_backward": True,
+            }
+        },
+        validate=False,
+    )
+    with pytest.raises(ConfigError) as exc:
+        cfg.validate()
+    assert "infctx_detach" in str(exc.value)
+
+
+def test_validation_parallel_infctx_rejects_deepspeed(tmp_path, tiny_checkpoint, tiny_sharegpt):
+    cfg = build_config(
+        tmp_path,
+        tiny_checkpoint(),
+        tiny_sharegpt,
+        {
+            "train": {"infctx": True, "infctx_parallel_backward": True},
+            "dist": {"mode": "deepspeed"},
+        },
+        validate=False,
+    )
+    with pytest.raises(ConfigError) as exc:
+        cfg.validate()
+    assert "DeepSpeed" in str(exc.value)
+
+
 def test_validation_missing_paths(tmp_path):
     cfg = Config.from_dict({"data": {"path": str(tmp_path / "missing.json")}})
     with pytest.raises(ConfigError) as exc:

@@ -21,6 +21,7 @@ from rwkv_easy.wizard import (
     _lora_fields,
     _misc_fields,
     _model_fields,
+    _parallel_backward_label,
     _training_fields,
     _truncate,
     _wrap_text,
@@ -159,6 +160,8 @@ def test_quickstart_helpers():
     assert args.non_interactive is True
     assert args.no_train is True
     assert venv_python(Path(".")).name in ("python", "python.exe")
+    assert parse_args(["--no-infctx-parallel-backward"]).infctx_parallel_backward is False
+    assert parse_args(["--infctx-parallel-backward"]).infctx_parallel_backward is True
 
 
 def test_all_wizard_fields_have_comments():
@@ -199,9 +202,16 @@ def test_apply_preset_updates_training_but_keeps_paths(tmp_path, tiny_checkpoint
     apply_preset(state, "lora-infctx")
     assert cfg.train.method == "lora"
     assert cfg.train.infctx is True
+    assert cfg.train.infctx_parallel_backward is True
     assert cfg.train.chunk_ctx == 2048
     assert cfg.train.ctx_len >= 8192
     assert state.preset_key == "lora-infctx"
+
+    apply_preset(state, "state-infctx")
+    assert cfg.train.method == "state"
+    assert cfg.train.infctx is True
+    assert cfg.train.infctx_parallel_backward is False
+    assert cfg.train.lr == pytest.approx(5e-3)
 
     apply_preset(state, "state")
     assert cfg.train.method == "state"
@@ -234,6 +244,31 @@ def test_home_items_have_help_and_presets():
     for item in items:
         assert item.comment.strip(), f"{item.label} 缺少行内注释"
         assert item.help.strip(), f"{item.label} 缺少详细说明"
+
+
+def test_parallel_backward_label_and_home_item():
+    env = _env(cuda=True, fla=True)
+    env.gpu_count = 2
+    state = WizardState(env=env, cfg=default_config(env))
+    cfg = state.cfg
+    cfg.train.infctx = True
+    cfg.dist.mode = "ddp"
+    cfg.train.infctx_parallel_backward = True
+    assert "逐块" in (_parallel_backward_label(state) or "")
+    cfg.train.infctx_parallel_backward = False
+    assert "最后统一" in (_parallel_backward_label(state) or "")
+    cfg.train.method = "state"
+    assert "State" in (_parallel_backward_label(state) or "")
+    cfg.dist.mode = "deepspeed"
+    assert "DeepSpeed" in (_parallel_backward_label(state) or "")
+    cfg.dist.mode = "single"
+    assert _parallel_backward_label(state) is None
+
+    cfg.dist.mode = "ddp"
+    cfg.train.method = "lora"
+    cfg.train.infctx_parallel_backward = True
+    items = _home_items(state)
+    assert "parallel_backward" in [item.action for item in items]
 
 
 def test_cjk_width_truncate_and_wrap():

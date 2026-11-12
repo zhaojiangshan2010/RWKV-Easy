@@ -105,8 +105,11 @@ class TrainConfig:
     # infctx 块之间是否截断梯度（推荐 true；false 显存需求成倍上升）。
     infctx_detach: bool = True
     # infctx 每个 chunk 立即 backward（显存只与 chunk_ctx 有关）。
-    # 单进程训练默认启用；DDP/DeepSpeed 暂不支持，会自动走旧的延迟 backward。
+    # 单进程训练默认启用；多卡是否逐块由 infctx_parallel_backward 控制。
     infctx_backward: bool = True
+    # DDP + infctx 时，每个 chunk 立即 backward，只有最后一块触发梯度 all-reduce。
+    # 显存 O(chunk_ctx)，不再随 ctx_len 增长；DeepSpeed / State Tuning 暂不支持。
+    infctx_parallel_backward: bool = True
     log_every: int = 10
     save_every_steps: int = 0
     save_every_epochs: int = 1
@@ -342,6 +345,34 @@ class Config:
                     f"chunk_ctx={self.train.chunk_ctx} 不是 16 的倍数；纯 PyTorch 后端可以运行，"
                     "但未来接入 CUDA/Triton 内核时建议用 16 的倍数。"
                 )
+            if self.train.infctx_parallel_backward and not self.train.infctx_detach:
+                errors.append(
+                    "`train.infctx_parallel_backward: true` 需要 "
+                    "`train.infctx_detach: true`：跨块反传无法在每块结束后立即释放激活。"
+                )
+            if self.train.infctx_parallel_backward and self.dist.mode == "deepspeed":
+                errors.append(
+                    "DeepSpeed 暂不支持多卡 infctx 逐块反传；"
+                    "请设 `train.infctx_parallel_backward: false`，或改用 `dist.mode: ddp`。"
+                )
+            if (
+                self.train.infctx_parallel_backward
+                and self.train.method == "state"
+                and self.dist.mode == "ddp"
+            ):
+                warns.append(
+                    "State Tuning + infctx 多卡仍走最后统一反传（time_state 只在第一块参与计算）；"
+                    "`train.infctx_parallel_backward` 只对 LoRA 生效。"
+                )
+            if (
+                self.train.precision == "fp16"
+                and self.dist.mode == "ddp"
+                and not self.train.infctx_parallel_backward
+            ):
+                warns.append(
+                    "DDP 延迟 infctx 暂不支持 fp16 GradScaler；请改用 bf16，"
+                    "或开启 train.infctx_parallel_backward。"
+                )
         if self.train.micro_batch_size <= 0:
             errors.append("train.micro_batch_size 必须 >= 1")
         if self.train.grad_accum <= 0:
@@ -468,6 +499,11 @@ class Config:
         return (
             f"{method}({detail}) | {infctx} ctx={self.train.ctx_len}"
             + (f"/chunk={self.train.chunk_ctx}" if self.train.infctx else "")
+            + (
+                " | ddp-chunk-backward"
+                if self.train.infctx and self.train.infctx_parallel_backward
+                else ""
+            )
             + f" | bsz={self.train.micro_batch_size}x{self.train.grad_accum}"
             f" | {self.train.precision} | data={Path(self.data.path).name}"
         )
@@ -675,7 +711,12 @@ def template_config(
         "  warmup_steps: 20",
         "  precision: bf16-full               # GPU 推荐；CPU 必须改 fp32",
         "  grad_checkpoint: true              # infctx + per-chunk backward 后可关",
-        "  infctx_backward: true              # 每块立即反传，显存 ∝ chunk_ctx",
+        "  infctx_backward: true              # 单卡：每块立即反传，显存 ∝ chunk_ctx",
+        (
+            "  infctx_parallel_backward: true     # DDP：每块反传，最后一块 all-reduce"
+            if method == "lora"
+            else "  infctx_parallel_backward: false    # State + 多卡仍走最后统一反传"
+        ),
         "  compile: false                     # CUDA 上建议 true；首次启动会编译",
         "  merge_at_end: true                 # 训练完自动导出完整权重",
         "",

@@ -82,7 +82,8 @@ rwkv-easy train -c configs/lora.yaml --set train.lr=2e-4 --set data.val_ratio=0.
 | `grad_checkpoint` | bool | `true` | 激活重计算，省显存、略慢 |
 | `l2wrap` | float | `1e-4` | RWKV 的 L2Wrap 稳定项；设 0 关闭 |
 | `infctx_detach` | bool | `true` | 块间是否截断梯度 |
-| `infctx_backward` | bool | `true` | 每块立即 backward（显存 ∝ chunk_ctx）；DDP/DeepSpeed 自动回退 |
+| `infctx_backward` | bool | `true` | 单卡 infctx 每块立即 backward（显存 ∝ chunk_ctx） |
+| `infctx_parallel_backward` | bool | `true` | DDP + infctx 每块立即 backward，最后一块 all-reduce |
 | `log_every` | int | `10` | 每多少个优化器 step 打印一次 |
 | `save_every_steps` | int | `0` | 每多少 step 保存一次；0 关闭 |
 | `save_every_epochs` | int | `1` | 每多少个 epoch 保存一次 |
@@ -121,7 +122,11 @@ rwkv-easy train -c configs/lora.yaml --set train.lr=2e-4 --set data.val_ratio=0.
   “最后统一 backward”，显存随 `ctx_len` 增长；
 - 开启 `infctx_backward` 后通常不再需要 `grad_checkpoint: true`
   （0.1B 实测关掉后 32.5K vs 23.7K tok/s）；
-- DDP / DeepSpeed 暂不支持 per-chunk backward，会自动走旧路径。
+- **多卡 DDP + LoRA**：`infctx_parallel_backward: true`（默认）会让每个
+  chunk 立即 backward，只有最后一块触发一次梯度 all-reduce，显存同样是
+  O(chunk_ctx)；设 `false` 则所有块最后统一反传，显存随 `ctx_len` 增长。
+- **DeepSpeed** 与 **State Tuning + DDP** 暂不支持逐块路径，会自动回退到
+  最后统一反传；`dist.mode: deepspeed` + 该字段为 true 会直接报配置错误。
 
 ## `lora` —— LoRA 超参
 
@@ -234,7 +239,8 @@ target_layers: [0, 1, 2, 3, 4, 5]
 | `train.grad_checkpoint` | 显存 ↓ / 速度 ↓ | infctx + per-chunk backward 后通常可关；8K ctx 23.7K → 34.6K |
 | `train.precision` | 显存 / 速度 | GPU 用 `bf16-full`（基座 bf16、适配器 fp32）；CPU 必须 `fp32` |
 | `train.chunk_ctx` | 显存 ↓ / 速度 ↓ | infctx 的显存单位；2048 在 0.1B/0.4B 上效率最高 |
-| `train.infctx_backward` | 显存 ↓↓ | 每块立即反传，显存与 ctx_len 解耦；DDP/DS 自动回退 |
+| `train.infctx_backward` | 显存 ↓↓ | 单卡每块立即反传，显存与 ctx_len 解耦 |
+| `train.infctx_parallel_backward` | 显存 ↓↓ | DDP + LoRA 每块立即反传，最后一块 all-reduce；DS/State 自动回退 |
 | `dist.mode: deepspeed` | 显存 ↓ | ZeRO 分片；单卡也能用，多卡节省优化器状态 |
 
 更完整的调优方法、显存模型和按模型规模的建议见

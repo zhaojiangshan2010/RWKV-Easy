@@ -44,7 +44,7 @@ pip install -e .
 | 6 | LoRA 合并数学 | `tests/test_model.py::test_lora_merge_math` | 与 `W + (B@A)·α/r` 差 < 1e-6 | 通过 |
 | 7 | State 梯度 | `tests/test_model.py::test_state_tuning_freeze_and_grad` | `time_state.grad` 非零且有限 | 通过 |
 | 8 | bf16 / bf16-full | `tests/test_train_smoke.py` | 不报 dtype 错、loss 有限 | 通过 |
-| 9 | 2 进程 DDP | `tests/test_ddp.py` | 训练完成、产物存在 | 通过（gloo） |
+| 9 | 2 进程 DDP（普通 / infctx 逐块 / 梯度累积） | `tests/test_ddp.py` | 梯度 all-gather 一致、两条 infctx 路径训练完成 | 通过（gloo） |
 | 10 | 端到端训练 | `configs/debug_cpu.yaml` | loss 下降 | 11.30 → 11.20（20 步） |
 | 11 | 断点续训 | `tests/test_train_smoke.py::test_resume` | step 从 3 继续到 6 | 通过 |
 | 12 | 合并后重载 | `selftest` / `test_merge` | 无 `lora_` key，可正常加载 | 通过 |
@@ -55,7 +55,7 @@ pip install -e .
 | 17 | seed / runtime | `tests/test_runtime.py` | 种子导出、deterministic 开关 | 通过 |
 | 18 | 参数文档覆盖 | `tests/test_docs.py` | 所有 Config 字段都出现在 TRAINING_PARAMETERS.md | 通过 |
 
-全套 133 个测试，CPU 上 128 passed + 5 skipped（fla 组需要 CUDA），
+全套 139 个测试，CPU 上 134 passed + 5 skipped（fla 组需要 CUDA），
 约 3–6 分钟（bf16-full 在 CPU 上较慢）。
 
 ---
@@ -137,7 +137,7 @@ pip install -e .
 环境：Windows 10、Python 3.11.9、torch 2.15.0+cpu、无 GPU。
 
 ```
-pytest tests -q                                  -> 128 passed, 5 skipped（fla 组）
+pytest tests -q                                  -> 134 passed, 5 skipped（fla 组）
 rwkv-easy selftest --full --steps 8              -> 自检通过（8/8 组合）
 configs/debug_cpu.yaml（20 步）                  -> loss 11.2995 -> 11.1975
 state 长跑（200 步，lr 5e-2）                    -> loss 11.2833 -> 10.9647

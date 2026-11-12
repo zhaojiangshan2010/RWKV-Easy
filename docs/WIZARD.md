@@ -40,6 +40,7 @@ Windows 传统控制台会自动退回 ASCII 边框。
 | `--yes` | 自动确认可选依赖（rwkv-fla） |
 | `--non-interactive` | 向导使用分行问答 |
 | `--no-train` | 只生成配置，不训练 |
+| `--(no-)infctx-parallel-backward` | DDP + infctx 是否逐块反传（透传给向导） |
 | `-o out.yaml` | 指定配置文件输出路径 |
 
 > 安装失败时会打印手动命令，不会静默退出。
@@ -158,6 +159,18 @@ Windows 传统控制台会自动退回 ASCII 边框。
 手动改了训练方式/精度/参数后，首页模板会显示 `[高级] 自定义`，提醒你当前
 配置不再是某个模板的默认值。
 
+### 多卡逐块反传
+
+当检测到 **多卡 + infctx + LoRA** 时，首页会出现「多卡逐块反传」开关：
+
+- **开启（默认）**：每个 chunk 立即 backward，除最后一块外跳过 all-reduce；
+  最后一块统一同步梯度。显存 O(chunk_ctx)，长上下文不再随 `ctx_len` 增长。
+- **关闭**：所有 chunk 最后统一反传，显存随 `ctx_len` 增长，长文本更容易 OOM。
+
+State Tuning + 多卡、以及 DeepSpeed 暂不支持逐块路径，向导会自动关闭这个
+开关并回退到最后统一反传。高级设置里对应字段是
+`train.infctx_parallel_backward`。
+
 ---
 
 ## 5. 新手引导
@@ -179,7 +192,7 @@ Windows 传统控制台会自动退回 ASCII 边框。
 
 | 组 | 内容 |
 |---|---|
-| 训练参数 | lr / batch / accum / ctx / precision / compile / infctx / 保存策略… |
+| 训练参数 | lr / batch / accum / ctx / precision / compile / infctx / 多卡逐块反传 / 保存策略… |
 | 模型与 WKV | decay / backend / wkv_chunk / head_size_divisor… |
 | 数据 | format / mode / template / train_on / EOS / val_ratio / workers… |
 | 分布式 / 日志 | DDP / DeepSpeed ZeRO / wandb / 日志级别… |
@@ -248,6 +261,14 @@ python -m rwkv_easy wizard --non-interactive --no-train -o my.yaml
 
 ```bash
 python -m rwkv_easy wizard --no-welcome
+```
+
+自动化时可以显式指定多卡逐块反传：
+
+```bash
+python -m rwkv_easy wizard --non-interactive \
+  --infctx-parallel-backward --no-train -o my.yaml
+# 关闭：--no-infctx-parallel-backward
 ```
 
 ---

@@ -111,14 +111,18 @@ native 的规律：
 
 ### 2.5 infctx：`infctx_backward` + `chunk_ctx: 2048`
 
-- `infctx_backward: true`（默认）：每个 chunk 立即 backward，显存真正
+- `infctx_backward: true`（默认）：单卡每个 chunk 立即 backward，显存真正
   `O(chunk_ctx)`；8K ctx 从 12.4 GiB 降到 **3.4 GiB**，0.1B 可训 32K。
 - `chunk_ctx: 2048`：把串行块数从 32 降到 4，8K ctx 从 1.37K（chunk256）
   提升到 34.6K（eager）/ 37.0K（compile）。
 - `grad_checkpoint: false`：per-chunk backward 已经限制了激活，
   0.1B 实测关掉后 23.7K → 34.6K；7B 级模型再按显存打开。
-- DDP / DeepSpeed 暂不支持 per-chunk backward，会自动回退到“最后统一
-  backward”，显存随 `ctx_len` 增长；长上下文请先用单卡验证。
+- **多卡 DDP**：`infctx_parallel_backward: true`（默认）让每个 chunk 立即
+  backward，除最后一块外都在 `no_sync()` 里；最后一块触发一次梯度
+  all-reduce。显存同样 `O(chunk_ctx)`，长上下文不再随 `ctx_len` 增长。
+  设 `false` 会回退到“所有块最后统一 backward”，显存随 `ctx_len` 增长。
+- **DeepSpeed** 与 **State Tuning + DDP** 暂不支持逐块路径，会自动回退到
+  最后统一反传；DS + 该字段为 true 会在配置校验时报错。
 
 ### 2.6 只对可训练 token 过 lm_head
 

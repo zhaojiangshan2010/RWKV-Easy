@@ -184,17 +184,24 @@ tokens_per_step = micro_batch_size × grad_accum × ctx_len × world_size
 |---|---|---|---|
 | `train.grad_checkpoint` | bool | `true` | 激活重计算，省显存、略慢 |
 | `train.infctx_detach` | bool | `true` | infctx 块间是否 detach 状态（截断 BPTT） |
-| `train.infctx_backward` | bool | `true` | infctx 每块立即 backward（显存 ∝ chunk_ctx） |
+| `train.infctx_backward` | bool | `true` | 单卡 infctx 每块立即 backward（显存 ∝ chunk_ctx） |
+| `train.infctx_parallel_backward` | bool | `true` | DDP + infctx 每块立即 backward，最后一块 all-reduce |
 
 - `grad_checkpoint`：对 block（以及 infctx 的 chunk）做 `torch.utils.checkpoint`；
   0.1B + per-chunk backward 时通常可以关掉，速度约 +40%。
 - `infctx_detach=true`：块间不反传，显存稳定；`false` 会走全量 BPTT，
-  显存成倍增加，并且 `infctx_backward` 自动关闭。
-- `infctx_backward=true`：每个 chunk 完成 forward 后立即 backward，只保留
-  detach 后的状态；单进程有效。**DDP / DeepSpeed 会自动回退**到
-  “所有块 loss 累加、最后统一 backward”的旧路径，显存随 `ctx_len` 增长。
+  显存成倍增加，并且 `infctx_backward` / `infctx_parallel_backward` 自动关闭。
+- `infctx_backward=true`：单卡每个 chunk 完成 forward 后立即 backward，只保留
+  detach 后的状态。
+- `infctx_parallel_backward=true`（默认）：**DDP + LoRA** 下同样逐块反传；
+  每个 chunk 是独立的 forward/backward 对，除最后一块外都包在 `no_sync()` 里，
+  最后一块触发一次梯度 all-reduce。显存 O(chunk_ctx)，不随 `ctx_len` 增长。
+- 设 `infctx_parallel_backward: false`：DDP 回退到“所有块 loss 累加、最后统一
+  backward”，显存随 `ctx_len` 增长；长上下文容易 OOM。
+- **DeepSpeed** 与 **State Tuning + DDP** 暂不支持逐块路径，会回退到最后统一
+  反传；`dist.mode: deepspeed` + 该字段为 true 会在配置校验时直接报错。
 - State Tuning 的后续块如果没有可训练输入，会跳过 backward（只有第一块
-  对 `time_state` 有梯度）。
+  对 `time_state` 有梯度）；这也是 State + DDP 暂不走逐块路径的原因。
 
 ### 3.5 loss 稳定项
 
@@ -471,6 +478,7 @@ train:
   chunk_ctx: 2048
   micro_batch_size: 2
   infctx_backward: true
+  infctx_parallel_backward: true
   infctx_detach: true
   grad_checkpoint: false
 data: {mode: packed}
