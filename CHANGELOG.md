@@ -1,5 +1,41 @@
 # 变更记录
 
+## 0.6.0 — 2026-11-13
+
+quickstart 复用主环境已装的库，只补缺失依赖。
+
+### 新增
+
+- **venv 复用主环境**：新建 `.venv` 默认带 `system-site-packages`，直接看见
+  主环境的 torch / PyYAML / rwkv-fla / DeepSpeed，不再从零安装。
+- **已有半成品 .venv 兼容**：如果 `.venv` 是自己的隔离环境、里面没有 torch，
+  会写一个 `_rwkv_easy_system_site.pth` 指向主环境 site-packages；不复制库、
+  不删除 venv、不重装 torch。Python 主版本不同则跳过并提示。
+- **依赖探测表**：启动时逐个报告 PyTorch / PyYAML / RWKV-EASY / rwkv-fla /
+  DeepSpeed / safetensors / Triton 是否已安装，以及 torch 的 CUDA 状态。
+- **只装缺失项**：`plan_required_installs()` 根据探测结果决定是否安装
+  torch / pyyaml / 项目；已装的直接跳过。项目安装改为
+  `pip install -e . --no-deps`，rwkv-fla 改为 `--no-deps`，避免 pip 把
+  torch 当缺失依赖重装。
+- `--isolated-venv`：需要完全隔离时，创建不带 system-site-packages 的 venv。
+- GPU 探测优先使用子进程 probe 的 torch 信息，减少一次 torch 导入。
+
+### 修复
+
+- `venv_uses_system_site_packages()` 现在接受 venv 根目录，正确读取
+  `pyvenv.cfg`（之前误拼成 `.venv/pyvenv.cfg`）。
+- `--skip-install` 会先尝试复用主环境库，再做 torch 探测；半成品 `.venv`
+  仍会自动回退到当前 Python。
+
+### 测试
+
+- **143 个测试**通过（CPU 138 passed + 5 fla skipped）。
+- 新增 `tests/test_quickstart.py`：依赖探测、跳过/安装计划、GPU 与 --cpu
+  分支、项目路径判断、system-site-packages venv、`.pth` 复用。
+- 本地临时项目副本端到端验证两种场景：新建 venv 继承主环境；已有隔离 venv
+  自动写 `.pth` 后复用。两次都输出“必需依赖已齐全，跳过安装”，没有触发 pip。
+- 远程 GPU 实例已关机，本轮未做远程复测。
+
 ## 0.5.0 — 2026-11-12
 
 多卡 DDP 修复 + infctx 逐块反传。
@@ -70,7 +106,7 @@
 
 ### 测试
 
-- 139 个测试通过（CPU 上 134 passed + 5 fla skipped）；新增模板、字段注释、
+- 133 个测试通过（CPU 上 128 passed + 5 fla skipped）；新增模板、字段注释、
   中文宽度/折行、首页说明覆盖测试。
 
 ### 文档

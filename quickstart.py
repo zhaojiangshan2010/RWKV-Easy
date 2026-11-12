@@ -8,14 +8,16 @@
 它会：
 
 1. 检测 Python / NVIDIA 驱动 / CUDA 版本；
-2. 需要时创建 ``.venv``，按 CUDA 版本安装对应 PyTorch；
-3. 安装本项目与可选的 rwkv-fla；
+2. 需要时创建 ``.venv``，默认复用主环境已装的库（system-site-packages），
+   只安装缺失的依赖；
+3. 逐个探测 torch / PyYAML / 本项目 / rwkv-fla，已装的跳过；
 4. 进入交互式向导：选择 LoRA / State / infctx、模型、数据集、层与模块，
    保存 YAML 并直接开始训练。
 
 常用参数::
 
     --no-venv        不创建 .venv，直接装到当前 Python 环境
+    --isolated-venv  .venv 不复用主环境已装的库（默认复用，避免重装 torch）
     --skip-install   跳过安装，直接进向导（环境已就绪时）
     --install-only   只安装，不进向导
     --cpu            强制 CPU 版 PyTorch
@@ -29,11 +31,13 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import shlex
 import subprocess
 import sys
+import sysconfig
 import venv
 from pathlib import Path
 
@@ -76,9 +80,270 @@ def run(cmd: list[str], env: dict[str, str] | None = None) -> int:
         return 1
 
 
+# --------------------------------------------------------------------------- #
+# 依赖探测：不安装，只报告哪些库已经可用
+# --------------------------------------------------------------------------- #
+
+_PROBE_MARKER = "<<<RWKV_EASY_PROBE>>>"
+_PROBE_CODE = r"""
+import importlib.util
+import json
+import sys
+
+names = {
+    "torch": "torch",
+    "yaml": "yaml",
+    "rwkv_easy": "rwkv_easy",
+    "rwkvfla": "rwkvfla",
+    "deepspeed": "deepspeed",
+    "safetensors": "safetensors",
+    "triton": "triton",
+}
+out = {"python": {"version": sys.version.split()[0], "executable": sys.executable}}
+for key, module in names.items():
+    try:
+        out[key] = {"available": importlib.util.find_spec(module) is not None}
+    except Exception as exc:
+        out[key] = {"available": False, "error": str(exc)}
+if out["torch"].get("available"):
+    try:
+        import torch
+        out["torch"].update(
+            version=torch.__version__,
+            cuda=torch.version.cuda,
+            cuda_available=bool(torch.cuda.is_available()),
+        )
+        if torch.cuda.is_available():
+            props = torch.cuda.get_device_properties(0)
+            out["torch"]["gpu_name"] = props.name
+            out["torch"]["memory_gib"] = props.total_memory / 1024**3
+            out["torch"]["gpu_count"] = torch.cuda.device_count()
+    except Exception as exc:
+        out["torch"] = {"available": False, "error": str(exc)}
+if out["yaml"].get("available"):
+    try:
+        import yaml
+        out["yaml"]["version"] = getattr(yaml, "__version__", None)
+    except Exception as exc:
+        out["yaml"] = {"available": False, "error": str(exc)}
+if out["rwkv_easy"].get("available"):
+    try:
+        import rwkv_easy
+        out["rwkv_easy"]["version"] = getattr(rwkv_easy, "__version__", None)
+        out["rwkv_easy"]["file"] = getattr(rwkv_easy, "__file__", None)
+    except Exception as exc:
+        out["rwkv_easy"] = {"available": False, "error": str(exc)}
+if out["rwkvfla"].get("available"):
+    try:
+        import rwkvfla  # noqa: F401
+        out["rwkvfla"]["version"] = getattr(rwkvfla, "__version__", None)
+    except Exception as exc:
+        out["rwkvfla"] = {"available": False, "error": str(exc)}
+print("MARKER" + json.dumps(out, ensure_ascii=False))
+""".replace("MARKER", _PROBE_MARKER)
+
+
+def probe_environment(python: str | Path | None = None) -> dict[str, dict]:
+    """在指定 Python 里探测依赖；返回 {包名: {available, version, ...}}。"""
+    executable = str(python or sys.executable)
+    try:
+        result = subprocess.run(
+            [executable, "-c", _PROBE_CODE],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    for line in (result.stdout or "").splitlines():
+        if line.startswith(_PROBE_MARKER):
+            try:
+                payload = json.loads(line[len(_PROBE_MARKER) :])
+                return payload if isinstance(payload, dict) else {}
+            except json.JSONDecodeError:
+                return {}
+    return {}
+
+
+def package_available(probe: dict[str, dict], name: str) -> bool:
+    return bool(probe.get(name, {}).get("available"))
+
+
+def _project_imports_from_root(probe: dict[str, dict]) -> bool:
+    info = probe.get("rwkv_easy", {})
+    if not info.get("available"):
+        return False
+    file = info.get("file")
+    if not file:
+        return False
+    try:
+        return Path(file).resolve().is_relative_to(PROJECT_ROOT.resolve())
+    except (OSError, ValueError):
+        return False
+
+
+def plan_required_installs(
+    probe: dict[str, dict],
+    nvidia: dict[str, str | float | None],
+    args: argparse.Namespace,
+) -> dict[str, bool]:
+    """计算必需依赖中哪些需要安装；已装的跳过。"""
+    torch_info = probe.get("torch", {})
+    gpu_present = bool(nvidia.get("name"))
+    need_cuda = gpu_present and not bool(getattr(args, "cpu", False))
+    torch_ready = bool(torch_info.get("available")) and (
+        bool(torch_info.get("cuda_available")) or not need_cuda
+    )
+    return {
+        "torch": not torch_ready,
+        "pyyaml": not package_available(probe, "yaml"),
+        "project": not (package_available(probe, "rwkv_easy") and _project_imports_from_root(probe)),
+    }
+
+
+def print_dependency_report(probe: dict[str, dict]) -> None:
+    rows = [
+        ("torch", "PyTorch"),
+        ("yaml", "PyYAML"),
+        ("rwkv_easy", "RWKV-EASY"),
+        ("rwkvfla", "rwkv-fla"),
+        ("deepspeed", "DeepSpeed"),
+        ("safetensors", "safetensors"),
+        ("triton", "Triton"),
+    ]
+    say("依赖检查（已安装的会跳过，不重复安装）")
+    for key, label in rows:
+        info = probe.get(key, {})
+        if info.get("available"):
+            version = info.get("version") or ""
+            detail = ""
+            if key == "torch":
+                cuda = info.get("cuda")
+                available = info.get("cuda_available")
+                detail = (
+                    f"CUDA {cuda} 可用" if available and cuda else
+                    "CUDA 不可用" if cuda else "CPU 版"
+                )
+                if info.get("gpu_name"):
+                    detail = f"{info['gpu_name']} / {detail}"
+            elif key == "rwkv_easy":
+                file = info.get("file")
+                if file:
+                    detail = _short_path(file)
+            print(
+                color(f"  ✓ {label:<12}", GREEN)
+                + f"{version}"
+                + (f"  ({detail})" if detail else ""),
+                flush=True,
+            )
+        else:
+            print(color(f"  ✗ {label:<12} 未安装", YELLOW), flush=True)
+
+
+def print_install_plan(plan: dict[str, bool]) -> None:
+    labels = {"torch": "PyTorch", "pyyaml": "PyYAML", "project": "RWKV-EASY（editable）"}
+    missing = [label for key, label in labels.items() if plan.get(key)]
+    if missing:
+        say("需要安装：" + " / ".join(missing))
+    else:
+        say("必需依赖已齐全，跳过安装。")
+
+
+def _short_path(path: str, limit: int = 64) -> str:
+    return path if len(path) <= limit else "…" + path[-(limit - 1) :]
+
+
+# --------------------------------------------------------------------------- #
+# venv 复用主环境：不复制库，用 system-site-packages / .pth 让 venv 看见
+# --------------------------------------------------------------------------- #
+
+
+def venv_uses_system_site_packages(venv_root: Path) -> bool:
+    cfg = venv_root / "pyvenv.cfg"
+    if not cfg.exists():
+        return False
+    try:
+        text = cfg.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    for line in text.splitlines():
+        if "=" in line:
+            key, value = line.split("=", 1)
+            if key.strip().lower() == "include-system-site-packages":
+                return value.strip().lower() == "true"
+    return False
+
+
+def venv_site_packages(python: str | Path) -> Path | None:
+    code = "import sysconfig; print(sysconfig.get_paths()['purelib'])"
+    try:
+        result = subprocess.run(
+            [str(python), "-c", code],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    value = (result.stdout or "").strip()
+    return Path(value) if value else None
+
+
+def main_site_packages() -> Path | None:
+    try:
+        return Path(sysconfig.get_paths()["purelib"])
+    except KeyError:
+        return None
+
+
+def write_system_site_link(venv_site: Path, main_site: Path) -> Path | None:
+    """给 venv 写一个 .pth，让它能 import 主环境已装的库。"""
+    if not venv_site.is_dir():
+        return None
+    target = venv_site / "_rwkv_easy_system_site.pth"
+    try:
+        target.write_text(str(main_site) + "\n", encoding="utf-8")
+    except OSError:
+        return None
+    return target
+
+
+def ensure_venv_reuses_system(venv_python: Path, venv_root: Path) -> None:
+    """已有 venv 缺库时，让它复用主环境 site-packages，而不是重装 torch。"""
+    venv_probe = probe_environment(venv_python)
+    if package_available(venv_probe, "torch"):
+        return  # venv 自己已经有 torch，保持隔离
+    main_probe = probe_environment(sys.executable)
+    if not package_available(main_probe, "torch"):
+        return
+    venv_version = str(venv_probe.get("python", {}).get("version", ""))
+    main_version = str(main_probe.get("python", {}).get("version", ""))
+    if venv_version.split(".")[:2] != main_version.split(".")[:2]:
+        warn(
+            f"venv Python {venv_version or '?'} 与主环境 {main_version or '?'} "
+            "主版本不同，跳过 site-packages 复用。"
+        )
+        return
+    venv_site = venv_site_packages(venv_python)
+    main_site = main_site_packages()
+    if venv_site is None or main_site is None:
+        return
+    link = write_system_site_link(venv_site, main_site)
+    if link is not None:
+        say(f"已让 .venv 复用主环境 site-packages：{main_site}")
+        say("不会复制库，也不会重装主环境已有的 torch / PyYAML。")
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="RWKV-EASY 一键安装 + 交互式训练向导")
     parser.add_argument("--no-venv", action="store_true", help="不创建 .venv")
+    parser.add_argument(
+        "--isolated-venv",
+        action="store_true",
+        help=".venv 不复用主环境已装的库（默认复用，避免重装 torch）",
+    )
     parser.add_argument("--skip-install", action="store_true", help="跳过安装，直接进向导")
     parser.add_argument("--install-only", action="store_true", help="只安装，不进向导")
     parser.add_argument("--cpu", action="store_true", help="强制 CPU 版 PyTorch")
@@ -116,27 +381,31 @@ def ensure_venv(args: argparse.Namespace) -> Path | None:
     if not python.exists():
         say(f"创建虚拟环境：{target}")
         try:
-            venv.EnvBuilder(with_pip=True, clear=False).create(target)
+            # 默认让 venv 直接看见主环境的 site-packages：不复制、不重装 torch。
+            venv.EnvBuilder(
+                with_pip=True,
+                clear=False,
+                system_site_packages=not args.isolated_venv,
+            ).create(target)
         except Exception as exc:
             warn(f"创建 .venv 失败（{exc}），改用当前 Python 环境。")
             return None
     if not python.exists():
         warn("没有找到 .venv 里的 Python，改用当前环境。")
         return None
+    if args.isolated_venv:
+        if venv_uses_system_site_packages(target):
+            warn(
+                "已有 .venv 启用了 system-site-packages；如需完全隔离，"
+                "请删除 .venv 后重新运行。"
+            )
+    else:
+        ensure_venv_reuses_system(python, target)
     if args.skip_install:
         # --skip-install 表示“环境已经就绪”。如果 .venv 是半成品（比如只建了目录、
         # 没有装 torch），继续用它只会在启动向导时崩，直接回退到当前解释器。
-        try:
-            probe = subprocess.run(
-                [str(python), "-c", "import torch"],
-                capture_output=True,
-                text=True,
-                timeout=30,
-                check=False,
-            )
-        except (OSError, subprocess.SubprocessError):
-            probe = None
-        if probe is None or probe.returncode != 0:
+        probe = probe_environment(python)
+        if not package_available(probe, "torch"):
             warn("检测到 .venv 不完整（没有可导入的 torch）；--skip-install 改用当前 Python。")
             return None
     return python
@@ -263,8 +532,9 @@ def install_torch(
 
 
 def install_project() -> int:
-    say("安装 RWKV-EASY（可编辑模式）...")
-    return pip_install(["-e", str(PROJECT_ROOT)])
+    say("安装 RWKV-EASY（可编辑模式，不重装 torch 等依赖）...")
+    # 依赖已在上一步逐个检查；--no-deps 防止 pip 把 torch 当成缺失依赖重装。
+    return pip_install(["-e", str(PROJECT_ROOT), "--no-deps"])
 
 
 def install_optional_fla(nvidia: dict[str, str | float | None], args: argparse.Namespace) -> None:
@@ -290,10 +560,12 @@ def install_optional_fla(nvidia: dict[str, str | float | None], args: argparse.N
             answer = "n"
         if answer not in ("", "y", "yes"):
             return
-    say("安装 rwkv-fla（失败不影响 native 后端）...")
-    code = pip_install(["rwkv-fla"])
+    say("安装 rwkv-fla（--no-deps，不重装 torch/triton）...")
+    code = pip_install(["rwkv-fla", "--no-deps"])
     if code != 0:
         warn("rwkv-fla 安装失败；向导里仍可选择 native 后端。")
+    else:
+        warn("如果 rwkv-fla 导入失败，通常是 triton 版本不匹配；可先跳过它用 native。")
 
 
 def _wizard_command(args: argparse.Namespace) -> list[str]:
@@ -327,10 +599,19 @@ def run_ready(args: argparse.Namespace) -> int:
     say("[1/3] 检测环境")
     say(f"Python：{sys.executable}（{sys.version.split()[0]}）")
     nvidia = nvidia_info()
-    torch_gpu = torch_gpu_info()
+    probe = probe_environment()
+    torch_info = probe.get("torch", {})
     for key in ("name", "memory_gib", "cuda"):
-        if not nvidia.get(key) and torch_gpu.get(key):
-            nvidia[key] = torch_gpu[key]
+        if not nvidia.get(key):
+            value = torch_info.get("gpu_name" if key == "name" else key)
+            if value:
+                nvidia[key] = value
+    if not probe:
+        # 探测子进程异常时，退回当前进程的 torch 信息（nvidi-smi 不可用的虚拟化环境）。
+        torch_gpu = torch_gpu_info()
+        for key in ("name", "memory_gib", "cuda"):
+            if not nvidia.get(key) and torch_gpu.get(key):
+                nvidia[key] = torch_gpu[key]
     if nvidia.get("name"):
         driver = f" / 驱动 {nvidia.get('driver')}" if nvidia.get("driver") else ""
         say(
@@ -348,33 +629,43 @@ def run_ready(args: argparse.Namespace) -> int:
                 warn("已取消。拿到 NVIDIA GPU 后重新运行 python quickstart.py 即可。")
                 return 1
 
+    print_dependency_report(probe)
+
     if args.skip_install:
-        version, _, _ = torch_status()
-        if version is None:
+        if not package_available(probe, "torch"):
             return die(
                 "--skip-install 需要当前 Python 已经安装 torch；"
                 "去掉这个参数让 quickstart 自动安装，或先手动 pip install torch。"
             )
-
-    if not args.skip_install:
-        say("[2/3] 安装 PyTorch 和项目")
-        version, cuda, available = torch_status()
-        need_torch = version is None or (nvidia.get("name") and not available and not args.cpu)
-        code = install_torch(nvidia, args, force=bool(need_torch or args.reinstall))
-        if code != 0:
-            die(
-                "PyTorch 安装失败。请检查网络，或手动执行：\n"
-                f"  {sys.executable} -m pip install torch --index-url "
-                "https://download.pytorch.org/whl/cu124\n"
-                f"  {sys.executable} -m pip install -e {PROJECT_ROOT}"
+        if not package_available(probe, "rwkv_easy"):
+            return die(
+                "--skip-install 需要当前环境能 import rwkv_easy；"
+                "在项目根目录运行，或先 pip install -e . --no-deps。"
             )
-            return code
-        code = install_project()
-        if code != 0:
-            return die("项目安装失败；请检查上面的 pip 输出。")
-        install_optional_fla(nvidia, args)
-    else:
         say("[2/3] --skip-install：跳过安装")
+    else:
+        plan = plan_required_installs(probe, nvidia, args)
+        print_install_plan(plan)
+        say("[2/3] 安装缺失依赖")
+        if plan["torch"] or args.reinstall:
+            code = install_torch(nvidia, args, force=bool(plan["torch"] or args.reinstall))
+            if code != 0:
+                die(
+                    "PyTorch 安装失败。请检查网络，或手动执行：\n"
+                    f"  {sys.executable} -m pip install torch --index-url "
+                    "https://download.pytorch.org/whl/cu124\n"
+                    f"  {sys.executable} -m pip install -e {PROJECT_ROOT} --no-deps"
+                )
+                return code
+        if plan["pyyaml"]:
+            code = pip_install(["pyyaml"])
+            if code != 0:
+                return die("PyYAML 安装失败；请检查网络或 pip 配置。")
+        if plan["project"]:
+            code = install_project()
+            if code != 0:
+                return die("项目安装失败；请检查上面的 pip 输出。")
+        install_optional_fla(nvidia, args)
 
     if args.install_only:
         print()

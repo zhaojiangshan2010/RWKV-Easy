@@ -24,8 +24,10 @@ python quickstart.py
 
 Windows 双击 `quickstart.bat`，Linux/macOS 也可以 `bash quickstart.sh`。
 
-它会：检测 NVIDIA 驱动与 CUDA → 创建 `.venv` → 按 CUDA 版本安装对应的
-PyTorch → 安装本项目 →（可选）安装 rwkv-fla → 进入交互式向导 → 直接训练。
+它会：检测 NVIDIA 驱动与 CUDA → 创建 `.venv`（默认复用主环境已装的库）→
+逐个探测 torch / PyYAML / 本项目 / rwkv-fla，已装的跳过，只安装缺失项 →
+进入交互式向导 → 直接训练。已有半成品 `.venv` 会通过 `.pth` 复用主环境，
+不会重装 torch；想完全隔离用 `--isolated-venv`。
 
 向导启动后先显示欢迎页：**直接回车使用推荐模板**，也可以按场景选长上下文 /
 State / 省显存 / 20 步试跑，或按 `g` 查看 4 页新手引导。首页每个参数都有
@@ -338,7 +340,7 @@ rwkv-easy train -c configs/lora_sharegpt_infctx.yaml \
 WKV 算子是纯 PyTorch 写的，所以整条链路都能在 CPU 上验证。三条命令：
 
 ```bash
-python -m pytest tests -q                            # 139 个（CPU 上 134 passed + 5 fla skipped）
+python -m pytest tests -q                            # 143 个（CPU 上 138 passed + 5 fla skipped）
 rwkv-easy selftest --full                            # lora/state × infctx on/off × fp32/bf16
 rwkv-easy train -c configs/debug_cpu.yaml             # 随机小模型，20 步
 ```

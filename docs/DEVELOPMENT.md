@@ -37,7 +37,7 @@ RWKV-EASY/
 │   └── assets/             # 内置词表、校准文本、示例数据
 ├── configs/                # 配置模板（含自我认知过拟合 demo）
 ├── docs/                   # 详细文档
-├── tests/                  # 139 个测试（CPU 上跳过 5 个 fla）
+├── tests/                  # 143 个测试（CPU 上跳过 5 个 fla）
 ├── examples/               # 示例数据（ShareGPT、自我认知实验数据）
 ├── CHANGELOG.md
 ├── install.sh / .bat / .ps1
@@ -49,7 +49,7 @@ RWKV-EASY/
 ## 3. 测试
 
 ```bash
-python -m pytest tests -q            # 全量：CPU 上 139 个，134 passed + 5 fla skipped
+python -m pytest tests -q            # 全量：CPU 上 143 个，138 passed + 5 fla skipped
 python -m ruff check rwkv_easy tests
 ```
 
@@ -65,6 +65,7 @@ python -m ruff check rwkv_easy tests
 | `test_fla_backend.py` | fla 数值对照（无 GPU / 无 fla 时自动跳过；`RWKV_EASY_SKIP_FLA=1` 强制跳过） |
 | `test_config.py` / `test_cli.py` / `test_runtime.py` | 配置校验、CLI、种子与运行时 |
 | `test_wizard.py` / `test_docs.py` | 向导逻辑、文档字段覆盖 |
+| `test_quickstart.py` | quickstart 依赖探测、跳过/安装计划、system-site venv 与 `.pth` 复用 |
 
 CPU 上跑完整自检：
 

@@ -18,11 +18,36 @@ Windows 传统控制台会自动退回 ASCII 边框。
 
 启动后会先看到 3 步说明，然后依次执行：
 
-1. **检测环境**：Python 版本、NVIDIA 驱动、CUDA、显存；
-2. **安装依赖**：需要时创建项目内 `.venv`，按 CUDA 版本选择 PyTorch wheel
-   （`cu130 → cu128 → cu126 → cu124 → cu121 → cu118` 逐个尝试），
-   安装本项目，CUDA + Linux 上可选安装 `rwkv-fla`；
+1. **检测环境**：Python 版本、NVIDIA 驱动、CUDA、显存，并逐个探测
+   PyTorch / PyYAML / 本项目 / rwkv-fla / DeepSpeed / safetensors / Triton；
+2. **安装依赖**：需要时创建项目内 `.venv`。默认让 `.venv` 复用主环境的
+   site-packages，已装的库直接跳过，只安装缺失项；没有 GPU 时按 CUDA 版本
+   选择 PyTorch wheel（`cu130 → cu128 → … → cu118` 逐个尝试）；
 3. **打开向导**：选模板 → 确认模型/数据 → 开始训练。
+
+### 依赖复用：不重复装 torch
+
+启动时会打印一张依赖表，例如：
+
+```text
+[RWKV-EASY] 依赖检查（已安装的会跳过，不重复安装）
+  ✓ PyTorch     2.14.1+cu130  (B1.gpu.large / CUDA 13.0 可用)
+  ✓ PyYAML      6.0.3
+  ✓ RWKV-EASY   0.6.0  (…/RWKV-EASY/rwkv_easy/__init__.py)
+  ✓ rwkv-fla    0.7 (…)
+  ✗ DeepSpeed    未安装
+[RWKV-EASY] 必需依赖已齐全，跳过安装。
+```
+
+- 新建 `.venv` 默认带 `system-site-packages`：它是“看见”主环境的库，
+  不是复制文件，创建很快。
+- 已有 `.venv` 如果是旧的隔离环境、里面没有 torch，会写
+  `_rwkv_easy_system_site.pth` 指向主环境 site-packages；不删除 venv，
+  也不重装 torch。Python 主版本不同时会跳过并提示。
+- 项目用 `pip install -e . --no-deps`，rwkv-fla 用 `--no-deps`，避免 pip
+  把已经存在的 torch 当作缺失依赖重新下载。
+- 想强制隔离：`--isolated-venv`（新建 venv 时不继承主环境）。
+- `--no-venv` 则完全不创建 venv，直接用当前 Python 环境。
 
 没有 NVIDIA GPU 时，quickstart 会先提示“只能做 CPU 自检”，避免误装后
 等很久才发现不能正式训练。
@@ -37,6 +62,7 @@ Windows 传统控制台会自动退回 ASCII 边框。
 | `--skip-install` | 跳过安装，直接进向导 |
 | `--install-only` | 只安装，不进向导 |
 | `--no-venv` | 不创建 `.venv`，装到当前环境 |
+| `--isolated-venv` | 创建完全隔离的 `.venv`（不复用主环境已装的库） |
 | `--yes` | 自动确认可选依赖（rwkv-fla） |
 | `--non-interactive` | 向导使用分行问答 |
 | `--no-train` | 只生成配置，不训练 |
